@@ -71,10 +71,6 @@ namespace WinFormsApiClient.VirtualPrinter
                         File.AppendAllText(initLogFile, $"[{DateTime.Now}] Error al iniciar BufferedPrintListener: {listenerEx.Message}\r\n");
                     }
 
-                    // NUEVO: Instalar el hook de impresión para interceptar trabajos de Bullzip
-                    bool hookInstalled = PrintHookManager.InstallPrintHook();
-                    File.AppendAllText(initLogFile, $"[{DateTime.Now}] Hook de impresión instalado: {hookInstalled}\r\n");
-
                     // Crear la carpeta fija para la salida de PDFs
                     EnsureOutputFolderExists();
 
@@ -920,8 +916,8 @@ Para evitar que aparezca el diálogo de guardar:
                 iniContent.AppendLine("OpenViewer=no");           // No abrir en visor
 
                 // MODIFICACIÓN: No ejecutar ningún comando al finalizar la impresión
-                iniContent.AppendLine("RunOnSuccess=");     // No ejecutar ningún comando
-                iniContent.AppendLine("RunOnError=");       // No ejecutar ningún comando en caso de error
+                iniContent.AppendLine("RunOnSuccess=");
+                iniContent.AppendLine($"RunOnSuccessParameters=\"{Application.ExecutablePath}\" /silentprint=\"%s\"");
 
                 iniContent.AppendLine($"FilenameTemplate=ECM_{DateTime.Now:yyyyMMdd}_<datetime:hhmmss>"); // Plantilla de nombre
                 iniContent.AppendLine("RememberLastFolders=no");  // No recordar última carpeta
@@ -1188,12 +1184,33 @@ if not exist ""%%1"" (
   exit /b 1
 )
 
+REM Esperar a que el archivo se complete (importante)
+timeout /t 4 /nobreak > nul
+
+REM Verificar que el archivo ya no está bloqueado
+set ATTEMPTS=0
+:CHECK_FILE_LOCK
+set /a ATTEMPTS+=1
+if %ATTEMPTS% GTR 15 goto PROCESS_ANYWAY
+
+REM Intentar abrir el archivo para verificar si está bloqueado
+copy ""%%1"" ""%%1.test"" > nul 2>&1
+if not exist ""%%1.test"" (
+  echo Intento %ATTEMPTS%: Archivo bloqueado, esperando... >> ""{Path.Combine(outputFolder, "bullzip_post.log")}""
+  timeout /t 2 /nobreak > nul
+  goto CHECK_FILE_LOCK
+) else (
+  del ""%%1.test"" > nul 2>&1
+  echo Archivo listo para procesamiento >> ""{Path.Combine(outputFolder, "bullzip_post.log")}""
+)
+
+:PROCESS_ANYWAY
 REM Procesar el archivo PDF mediante la aplicación principal
-start """" /min ""{Application.ExecutablePath}"" /silentprint=""%%1""
+echo Iniciando procesamiento del archivo >> ""{Path.Combine(outputFolder, "bullzip_post.log")}""
+start """" /b ""{Application.ExecutablePath}"" /silentprint=""%%1""
 
 exit /b 0
 ";
-
                 File.WriteAllText(postScriptPath, postScriptContent);
                 EnsureScriptPermissions(postScriptPath);
                 File.AppendAllText(diagFile, $"[{DateTime.Now}] Script de post-procesamiento creado en: {postScriptPath}\r\n");
@@ -1559,7 +1576,6 @@ catch {{
                 WatcherLogger.LogError("Error al configurar watcher de Bullzip", ex);
             }
         }
-
         /// <summary>
         /// Manejador de eventos que se activa cuando se crea un nuevo archivo PDF
         /// </summary>
@@ -1567,50 +1583,71 @@ catch {{
         {
             try
             {
-                // Esperar brevemente para asegurar que el archivo está completo
-                System.Threading.Thread.Sleep(500);
+                // Log inmediato de detección para diagnóstico
+                WatcherLogger.LogActivity($"Archivo PDF detectado: {e.FullPath}");
 
-                // Verificar que el archivo exista y tenga contenido
-                if (File.Exists(e.FullPath) && new FileInfo(e.FullPath).Length > 0)
+                // Esperar más tiempo para asegurar que el archivo está completo
+                System.Threading.Thread.Sleep(3000); // Incrementado a 3 segundos
+
+                // Verificar que el archivo exista
+                if (!File.Exists(e.FullPath))
                 {
-                    WatcherLogger.LogActivity($"Nuevo archivo PDF detectado: {e.FullPath}");
-                    Console.WriteLine($"Bullzip creó un nuevo archivo PDF: {e.FullPath}");
+                    WatcherLogger.LogActivity($"El archivo ya no existe: {e.FullPath}");
+                    return;
+                }
 
-                    // Verificar si ya hay una instancia en ejecución antes de lanzar una nueva
-                    bool shouldLaunchApp = true;
+                // Verificar tamaño
+                var fileInfo = new FileInfo(e.FullPath);
+                if (fileInfo.Length == 0)
+                {
+                    WatcherLogger.LogActivity($"Archivo vacío detectado: {e.FullPath}");
+                    return;
+                }
 
+                // Si el archivo está en uso, programar verificaciones periódicas
+                if (!FileMonitor.IsFileReady(e.FullPath))
+                {
+                    WatcherLogger.LogActivity($"Archivo en uso, programando verificación posterior: {e.FullPath}");
+                    ScheduleFileCheck(e.FullPath);
+                    return;
+                }
+
+                // Si llegamos aquí, el archivo está listo para procesarse
+                WatcherLogger.LogActivity($"Archivo PDF listo para procesamiento: {e.FullPath}");
+
+                // Verificar si ya hay una instancia en ejecución
+                bool shouldLaunchApp = true;
+                try
+                {
+                    Process[] existingProcesses = Process.GetProcessesByName("WinFormsApiClient");
+                    if (existingProcesses.Length > 1) // Si hay más de una instancia (contando la actual)
+                    {
+                        shouldLaunchApp = false;
+                        WatcherLogger.LogActivity("Ya existe una instancia de ECM Central en ejecución");
+                    }
+                }
+                catch (Exception procEx)
+                {
+                    WatcherLogger.LogError("Error al buscar instancias existentes", procEx);
+                }
+
+                // Procesar el archivo
+                if (shouldLaunchApp)
+                {
+                    LaunchApplicationWithFile(e.FullPath);
+                }
+                else
+                {
                     try
                     {
-                        // Intentar obtener una instancia existente
-                        Process[] existingProcesses = Process.GetProcessesByName("WinFormsApiClient");
-                        if (existingProcesses.Length > 1) // Si hay más de una instancia (contando la actual)
-                        {
-                            shouldLaunchApp = false;
-                            WatcherLogger.LogActivity("Ya existe una instancia de ECM Central en ejecución");
-                        }
+                        WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(e.FullPath);
+                        WatcherLogger.LogActivity($"Enviado archivo a procesador: {e.FullPath}");
                     }
                     catch (Exception procEx)
                     {
-                        Console.WriteLine($"Error al buscar instancias existentes: {procEx.Message}");
-                    }
-
-                    // Lanzar la aplicación si corresponde
-                    if (shouldLaunchApp)
-                    {
+                        WatcherLogger.LogError("Error al procesar documento en instancia existente", procEx);
+                        // Como alternativa, intentar lanzar la aplicación de todos modos
                         LaunchApplicationWithFile(e.FullPath);
-                    }
-                    else
-                    {
-                        // Notificar al procesador de documentos directamente
-                        try
-                        {
-                            WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(e.FullPath);
-                            WatcherLogger.LogActivity($"Enviado archivo a instancia existente: {e.FullPath}");
-                        }
-                        catch (Exception procEx)
-                        {
-                            WatcherLogger.LogError("Error al procesar documento en instancia existente", procEx);
-                        }
                     }
                 }
             }
@@ -1618,9 +1655,105 @@ catch {{
             {
                 Console.WriteLine($"Error al procesar nuevo archivo PDF: {ex.Message}");
                 WatcherLogger.LogError("Error al procesar archivo PDF creado por Bullzip", ex);
+
+                // Intento de recuperación - intentar procesar el archivo de todos modos
+                try
+                {
+                    if (File.Exists(e.FullPath) && new FileInfo(e.FullPath).Length > 0)
+                    {
+                        // Esperar un poco más
+                        System.Threading.Thread.Sleep(5000);
+                        LaunchApplicationWithFile(e.FullPath);
+                        WatcherLogger.LogActivity($"Recuperación: Archivo procesado tras error: {e.FullPath}");
+                    }
+                }
+                catch { /* Ignorar errores en recuperación */ }
             }
         }
 
+        // Planificar verificación posterior para cuando el archivo esté listo
+        private static readonly Dictionary<string, System.Windows.Forms.Timer> _pendingFiles =
+            new Dictionary<string, System.Windows.Forms.Timer>();
+        public static void CreatePendingFileMarker(string filePath)
+        {
+            try
+            {
+                // Asegurarse que la carpeta existe
+                EnsureOutputFolderExists();
+
+                // Crear el archivo marcador con la ruta completa
+                string markerFile = Path.Combine(FIXED_OUTPUT_PATH, "pending_pdf.marker");
+                File.WriteAllText(markerFile, filePath);
+
+                // También guardar en ubicación temporal para mayor seguridad
+                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
+                File.WriteAllText(tempFile, filePath);
+
+                Console.WriteLine($"Marcador de archivo pendiente creado en: {markerFile}");
+                Console.WriteLine($"Archivo pendiente: {filePath}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al crear marcador de archivo pendiente: {ex.Message}");
+            }
+        }
+        private static void ScheduleFileCheck(string filePath)
+        {
+            // Detener timer anterior si existe
+            if (_pendingFiles.ContainsKey(filePath) && _pendingFiles[filePath] != null)
+            {
+                _pendingFiles[filePath].Stop();
+                _pendingFiles[filePath].Dispose();
+            }
+
+            // Crear nuevo timer para verificar en 1 segundo
+            System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
+            timer.Interval = 1000;
+            timer.Tick += (s, e) =>
+            {
+                timer.Stop();
+                _pendingFiles.Remove(filePath);
+
+                // Verificar de nuevo
+                if (File.Exists(filePath))
+                {
+                    var fileInfo = new FileInfo(filePath);
+                    if (fileInfo.Length > 0 && FileMonitor.IsFileReady(filePath))
+                    {
+                        WatcherLogger.LogActivity($"Archivo verificado y ahora listo: {filePath}");
+                        // Procesar el archivo
+                        if (BackgroundMonitorService.IsActuallyRunning())
+                        {
+                            // Notificar al procesador de documentos
+                            try
+                            {
+                                WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(filePath);
+                                WatcherLogger.LogActivity($"Enviado archivo a procesador: {filePath}");
+                            }
+                            catch (Exception ex)
+                            {
+                                WatcherLogger.LogError("Error al procesar documento", ex);
+                            }
+                        }
+                        else
+                        {
+                            // Iniciar aplicación
+                            LaunchApplicationWithFile(filePath);
+                        }
+                    }
+                    else
+                    {
+                        // Seguir esperando
+                        ScheduleFileCheck(filePath);
+                    }
+                }
+
+                timer.Dispose();
+            };
+
+            _pendingFiles[filePath] = timer;
+            timer.Start();
+        }
         /// <summary>
         /// Lanza la aplicación ECM Central para procesar un archivo específico
         /// </summary>
@@ -1668,18 +1801,6 @@ catch {{
                 File.WriteAllText(testFile, $"Test de permisos: {DateTime.Now}");
                 File.Delete(testFile);
                 Console.WriteLine($"Verificación de permisos en carpeta de salida: OK");
-
-                // NUEVO: Asegurar que el hook de impresión esté instalado
-                string hookLog = Path.Combine(FIXED_OUTPUT_PATH, "hook_setup.log");
-                try
-                {
-                    bool hookInstalled = PrintHookManager.InstallPrintHook();
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Hook de impresión instalado: {hookInstalled}\r\n");
-                }
-                catch (Exception hookEx)
-                {
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al instalar hook: {hookEx.Message}\r\n");
-                }
             }
             catch (Exception ex)
             {

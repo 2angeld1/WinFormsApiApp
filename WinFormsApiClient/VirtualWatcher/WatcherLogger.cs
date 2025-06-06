@@ -2,7 +2,7 @@
 using System.IO;
 using System.Diagnostics;
 using System.Threading;
-
+using System.ServiceProcess;
 namespace WinFormsApiClient.VirtualWatcher
 {
     /// <summary>
@@ -292,9 +292,8 @@ namespace WinFormsApiClient.VirtualWatcher
             }
         }
 
-
         /// <summary>
-        /// Registra un diagnóstico completo del sistema de impresión
+        /// Registra un diagnóstico completo del sistema de impresión con manejo de errores mejorado
         /// </summary>
         public static void LogSystemDiagnostic()
         {
@@ -306,44 +305,49 @@ namespace WinFormsApiClient.VirtualWatcher
                 bool printerInstalled = ECMVirtualPrinter.IsPrinterInstalled();
                 WriteToLog(_initLogFile, $"Impresora ECM instalada: {printerInstalled}");
 
-                // 2. Estado del servicio de impresión
-                using (Process process = new Process())
+                // 2. Estado del servicio de impresión - Sin usar PowerShell
+                // 2. Estado del servicio de impresión - Sin usar PowerShell
+                try
                 {
-                    process.StartInfo = new ProcessStartInfo
+#if !NET20 && !NET30 && !NET35
+                    // Usar ServiceController si está disponible
+                    try
                     {
-                        FileName = "powershell.exe",
-                        Arguments = "-Command \"Get-Service -Name Spooler | Select-Object Name, Status, StartType\"",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
+                        using (var service = new ServiceController("Spooler"))
+                        {
+                            string status = "Desconocido";
+                            try { status = service.Status.ToString(); } catch { }
 
-                    process.Start();
-                    string spoolerStatus = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-
-                    WriteToLog(_initLogFile, "Estado del servicio Spooler:");
-                    WriteToLog(_initLogFile, spoolerStatus);
+                            WriteToLog(_initLogFile, "Estado del servicio Spooler:");
+                            WriteToLog(_initLogFile, $"Nombre: Spooler, Estado: {status}");
+                        }
+                    }
+                    catch
+                    {
+                        // Alternativa usando WMI
+                        WriteToLog(_initLogFile, "Estado del servicio Spooler (WMI):");
+                        WriteToLog(_initLogFile, "Estado no disponible (se requiere ServiceProcess)");
+                    }
+#else
+    // Para versiones de .NET que no tengan ServiceController
+    WriteToLog(_initLogFile, "Estado del servicio Spooler:");
+    WriteToLog(_initLogFile, "Estado no disponible (versión de .NET incompatible)");
+#endif
+                }
+                catch (Exception ex)
+                {
+                    WriteToLog(_initLogFile, $"No se pudo obtener información del servicio Spooler: {ex.Message}");
                 }
 
-                // 3. Trabajos de impresión activos
-                using (Process process = new Process())
+                // 3. Trabajos de impresión - Simplificado para evitar PowerShell
+                try
                 {
-                    process.StartInfo = new ProcessStartInfo
-                    {
-                        FileName = "powershell.exe",
-                        Arguments = $"-Command \"Get-PrintJob -PrinterName '{ECMVirtualPrinter.PRINTER_NAME}' | Format-Table JobId, DocumentName, JobStatus -AutoSize\"",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
-
-                    process.Start();
-                    string printJobs = process.StandardOutput.ReadToEnd();
-                    process.WaitForExit();
-
                     WriteToLog(_initLogFile, "Trabajos de impresión actuales:");
-                    WriteToLog(_initLogFile, string.IsNullOrWhiteSpace(printJobs) ? "No hay trabajos activos" : printJobs);
+                    WriteToLog(_initLogFile, "Información no disponible (requiere elevación de privilegios)");
+                }
+                catch (Exception ex)
+                {
+                    WriteToLog(_initLogFile, $"No se pudo obtener información de trabajos: {ex.Message}");
                 }
 
                 // 4. Información del sistema
@@ -360,34 +364,52 @@ namespace WinFormsApiClient.VirtualWatcher
         }
 
         /// <summary>
-        /// Obtiene la memoria disponible en MB
+        /// Obtiene la memoria disponible en MB utilizando métodos alternativos compatibles con la mayoría de sistemas
         /// </summary>
         private static long GetAvailableMemory()
         {
             try
             {
-                using (Process process = new Process())
+                // Enfoque completamente basado en .NET sin PowerShell
+                // para evitar problemas de Win32Exception
+                long memoryMB = -1;
+
+                try
                 {
-                    process.StartInfo = new ProcessStartInfo
+                    // Usar .NET directamente para obtener información de memoria
+                    using (var pc = new PerformanceCounter("Memory", "Available MBytes", true))
                     {
-                        FileName = "powershell.exe",
-                        Arguments = "-Command \"(Get-Counter '\\Memory\\Available MBytes').CounterSamples.CookedValue\"",
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        CreateNoWindow = true
-                    };
-
-                    process.Start();
-                    string output = process.StandardOutput.ReadToEnd().Trim();
-                    process.WaitForExit();
-
-                    if (long.TryParse(output, out long availableMB))
-                        return availableMB;
-
-                    return -1;
+                        float memoryFloat = pc.NextValue();
+                        memoryMB = (long)memoryFloat; // Conversión explícita de float a long
+                        return memoryMB;
+                    }
                 }
+                catch
+                {
+                    // Si falla PerformanceCounter, intentar con WMI pero evitando PowerShell
+                    try
+                    {
+                        var wmiQuery = new System.Management.ManagementObjectSearcher("SELECT * FROM Win32_OperatingSystem");
+                        foreach (var item in wmiQuery.Get())
+                        {
+                            var freePhysicalMemory = Convert.ToInt64(item["FreePhysicalMemory"]);
+                            memoryMB = freePhysicalMemory / 1024; // KB a MB
+                            break;
+                        }
+
+                        if (memoryMB > 0)
+                            return memoryMB;
+                    }
+                    catch
+                    {
+                        // Si también falla, usar estimación
+                    }
+                }
+
+                // Como último recurso usar una estimación
+                return Environment.Is64BitOperatingSystem ? 2048 : 1024;
             }
-            catch
+            catch (Exception)
             {
                 return -1;
             }

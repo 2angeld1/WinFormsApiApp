@@ -65,9 +65,9 @@ namespace WinFormsApiClient.VirtualWatcher
                 {
                     FileName = Application.ExecutablePath,
                     Arguments = "/backgroundmonitor /silent",
-                    UseShellExecute = false,   // No usar shell para evitar ventanas de consola
-                    CreateNoWindow = true,     // No mostrar ventana de consola
-                    WindowStyle = ProcessWindowStyle.Hidden
+                    UseShellExecute = true,    // Usar shell para permitir que WindowStyle funcione
+                    CreateNoWindow = true,     // Esto solo funciona cuando UseShellExecute es false
+                    WindowStyle = ProcessWindowStyle.Hidden // Esto funciona cuando UseShellExecute es true
                 };
 
                 // Iniciar el proceso

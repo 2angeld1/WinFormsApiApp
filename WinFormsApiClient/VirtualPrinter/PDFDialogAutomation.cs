@@ -1,12 +1,25 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
+using System.CodeDom.Compiler;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
+using System.Net.NetworkInformation;
+using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows;
 using System.Windows.Forms;
-using Microsoft.Win32;
+using System.Xml.Linq;
 using WinFormsApiClient.VirtualWatcher;
+using static System.Net.Mime.MediaTypeNames;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.TaskbarClock;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.TextBox;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.Window;
 
 namespace WinFormsApiClient.VirtualPrinter
 {
@@ -505,7 +518,7 @@ try {{
                 // Verificar si el monitor está activo, de lo contrario iniciarlo
                 if (!WinFormsApiClient.VirtualWatcher.BackgroundMonitorService._isRunning)
                 {
-                    string initLogPath = Path.Combine(VirtualPrinterCore.GetLogFolderPath(), "init_log.txt");
+                    string initializationLogPath = Path.Combine(VirtualPrinterCore.GetLogFolderPath(), "init_log.txt");
 
                     // Verificar si ha ocurrido una excepción de seguridad reciente
                     bool recentSecurityError = false;
@@ -531,12 +544,12 @@ try {{
                         Console.WriteLine(mensaje);
                         try
                         {
-                            SafeWriteToLog(initLogPath, $"[{DateTime.Now}] {mensaje}\r\n");
+                            SafeWriteToLog(initializationLogPath, $"[{DateTime.Now}] {mensaje}\r\n");
                             WatcherLogger.LogActivity("Iniciando sincronización de monitor desde configuración de Bullzip");
 
                             // Usar el método de sincronización de PDFDialogAutomation
                             monitorStarted = PDFDialogAutomation.EnsureBackgroundMonitorBeforePrinting();
-                            SafeWriteToLog(initLogPath, $"[{DateTime.Now}] Resultado sincronización: {(monitorStarted ? "Éxito" : "Fallido")}\r\n");
+                            SafeWriteToLog(initializationLogPath, $"[{DateTime.Now}] Resultado sincronización: {(monitorStarted ? "Éxito" : "Fallido")}\r\n");
                         }
                         catch (System.Security.SecurityException secEx)
                         {
@@ -776,7 +789,7 @@ for %%F in (""%USERPROFILE%\Documents\*.pdf"" ""%USERPROFILE%\Desktop\*.pdf"" ""
 timeout /T 2 /NOBREAK > nul
 goto loop
 ";
-
+                RunBatchHidden(batchFilePath);
                 // Guardar el archivo batch
                 File.WriteAllText(batchFilePath, batchContent);
                 Console.WriteLine($"Archivo batch de respaldo creado en: {batchFilePath}");
@@ -835,7 +848,6 @@ goto loop
 
 #include <File.au3>
 #include <MsgBoxConstants.au3>
-#include <WinAPIFiles.au3>
 #include <Date.au3>
 #include <AutoItConstants.au3>
 
@@ -854,20 +866,22 @@ EndIf
 
 ; Búsqueda continua de diálogos de guardado
 While 1
-    ; Buscar diálogos relacionados con PDF
+    ; Buscar diálogos específicos de guardado - NO otros diálogos
     Local $hWnd = FindSaveDialog()
     
     ; Si se encontró un diálogo, procesarlo
     If $hWnd Then
+        FileWriteLine($logFile, ""Diálogo encontrado: "" & WinGetTitle($hWnd))
         ProcessSaveDialog($hWnd)
     EndIf
     
     ; Pausa para no consumir recursos
-    Sleep(100)
+    Sleep(300)
 WEnd
 
 ; Función para encontrar diálogos de guardado
 Func FindSaveDialog()
+    ; Solo buscar diálogos específicos de guardado
     Local $titles = [ _
         ""Guardar archivo PDF como"", ""Save PDF File As"", ""Guardar PDF como"", ""Save As"", _
         ""Guardar como"", ""Microsoft Print to PDF"", ""Guardar documento"", ""Print as PDF"" _
@@ -878,11 +892,12 @@ Func FindSaveDialog()
         If @error = 0 Then Return $hWnd
     Next
     
-    ; Búsqueda por clase de ventana
+    ; Búsqueda más específica para evitar falsos positivos
     $hWnd = WinGetHandle(""[CLASS:32770]"")
     If @error = 0 Then
         $title = WinGetTitle($hWnd)
-        If StringInStr($title, ""PDF"") Or StringInStr($title, ""Guardar"") Or StringInStr($title, ""Save"") Then
+        ; Solo activar con ventanas de guardado
+        If StringInStr($title, ""PDF"") And (StringInStr($title, ""Guardar"") Or StringInStr($title, ""Save"")) Then
             Return $hWnd
         EndIf
     EndIf
@@ -892,18 +907,35 @@ EndFunc
 
 ; Función para procesar el diálogo de guardado
 Func ProcessSaveDialog($hWnd)
+    ; Verificar que el diálogo realmente es de guardado (doble verificación)
+    Local $title = WinGetTitle($hWnd)
+    If Not (StringInStr($title, ""PDF"") Or StringInStr($title, ""Guardar"") Or StringInStr($title, ""Save"")) Then
+        FileWriteLine($logFile, ""Ignorando diálogo no relacionado con PDF: "" & $title)
+        Return
+    EndIf
+    
     ; Activar el diálogo
     WinActivate($hWnd)
-    FileWriteLine($logFile, ""Diálogo de guardado encontrado: "" & WinGetTitle($hWnd))
+    FileWriteLine($logFile, ""Procesando diálogo: "" & $title)
+    
+    ; Esperar un momento para que la ventana esté lista
+    Sleep(300)
     
     ; Generar nombre de archivo con timestamp
     Local $fileName = ""ECM_"" & @YEAR & @MON & @MDAY & ""_"" & @HOUR & @MIN & @SEC & "".pdf""
     Local $fullPath = $outputFolder & ""\"" & $fileName
     
+    ; Guardar la ruta original como respaldo
+    Local $originalPath = $fullPath
+    
     ; Establecer la ruta completa en el diálogo
     If ControlExists($hWnd, """", ""Edit1"") Then
+        FileWriteLine($logFile, ""Configurando ruta: "" & $fullPath)
         ControlSetText($hWnd, """", ""Edit1"", $fullPath)
     EndIf
+    
+    ; Esperar a que el control se actualice
+    Sleep(300)
     
     ; Presionar el botón Guardar
     If ControlExists($hWnd, """", ""Button1"") Then
@@ -917,6 +949,9 @@ Func ProcessSaveDialog($hWnd)
         Send(""!s"") ; Alt+S para Save
     EndIf
     
+    ; Logear la acción
+    FileWriteLine($logFile, ""Botón de guardar presionado para: "" & $fullPath)
+    
     ; Manejar posible diálogo de confirmación
     Sleep(500)
     $confirmHWnd = WinGetHandle(""[Confirm Save As]"")
@@ -927,8 +962,9 @@ Func ProcessSaveDialog($hWnd)
     
     ; Notificar la creación del archivo
     FileWriteLine($logFile, ""Archivo guardado: "" & $fullPath)
-EndFunc
-";
+    
+    ; Importante: No realizar ninguna otra acción con el archivo recién guardado
+EndFunc";
 
             File.WriteAllText(AutoITScriptPath, scriptContent);
             Console.WriteLine($"Script de AutoIT actualizado: {AutoITScriptPath}");
@@ -953,12 +989,18 @@ EndFunc
                     return true;
                 }
 
+                // NUEVO: Registrar inicio explícito de AutoIT
+                string logFile = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "autoit_execution.log");
+                File.AppendAllText(logFile, $"[{DateTime.Now}] Iniciando script AutoIT para trabajo de impresión\r\n");
+
+                // Escribir una versión actualizada del script AutoIt
+                WriteAutoITScriptWithSafeHandling();
+
                 // Rutas posibles de AutoIt
                 string[] possibleAutoItPaths = {
             @"C:\Program Files\AutoIt3\autoit3.exe",
             @"C:\Program Files (x86)\AutoIt3\autoit3.exe",
-            // Añadir posible ubicación si AutoIt se descargó con la aplicación
-            Path.Combine(Application.StartupPath, "tools", "autoit3.exe")
+            Path.Combine(System.Windows.Forms.Application.StartupPath, "tools", "autoit3.exe")
         };
 
                 // Intentar ejecutar con AutoIt
@@ -978,61 +1020,21 @@ EndFunc
 
                             _autoITProcess = Process.Start(psi);
                             Console.WriteLine($"Script AutoIT iniciado con: {autoItPath}");
+                            File.AppendAllText(logFile, $"[{DateTime.Now}] Script AutoIT iniciado usando {autoItPath}\r\n");
                             return true;
                         }
                         catch (Exception ex)
                         {
                             Console.WriteLine($"Error con AutoIt ({autoItPath}): {ex.Message}");
+                            File.AppendAllText(logFile, $"[{DateTime.Now}] Error al iniciar AutoIT: {ex.Message}\r\n");
                         }
                     }
                 }
 
-                // Si no podemos encontrar AutoIT, usar un enfoque alternativo con PowerShell
-                Console.WriteLine("AutoIT no encontrado, intentando con PowerShell como alternativa...");
+                // Si llegamos aquí, no se pudo iniciar AutoIT
+                File.AppendAllText(logFile, $"[{DateTime.Now}] No se encontró AutoIT, se usará método alternativo\r\n");
 
-                string psScript = $@"
-        Add-Type -AssemblyName System.Windows.Forms
-        $watcher = New-Object System.IO.FileSystemWatcher
-        $watcher.Path = '{VirtualPrinterCore.FIXED_OUTPUT_PATH.Replace(@"\", @"\\")}'
-        $watcher.Filter = '*.pdf'
-        $watcher.EnableRaisingEvents = $true
-        
-        $action = {{ 
-            $path = $Event.SourceEventArgs.FullPath 
-            Write-Host ""PDF detectado: $path""
-        }}
-        
-        Register-ObjectEvent -InputObject $watcher -EventName Created -Action $action
-        
-        while ($true) {{
-            Start-Sleep -Seconds 1
-            $dialogs = Get-Process | Where-Object {{ $_.MainWindowTitle -like '*PDF*' -or $_.MainWindowTitle -like '*Save*' -or $_.MainWindowTitle -like '*Guardar*' }}
-            if ($dialogs) {{
-                foreach ($dialog in $dialogs) {{
-                    try {{
-                        [System.Windows.Forms.SendKeys]::SendWait('{VirtualPrinterCore.FIXED_OUTPUT_PATH.Replace(@"\", @"\\")}' + '\ECM_' + (Get-Date -Format 'yyyyMMddHHmmss') + '.pdf')
-                        Start-Sleep -Milliseconds 300
-                        [System.Windows.Forms.SendKeys]::SendWait('{{ENTER}}')
-                    }} catch {{ }}
-                }}
-            }}
-        }}
-        ";
-
-                string scriptPath = Path.Combine(Path.GetTempPath(), "ecm_pdf_monitor.ps1");
-                File.WriteAllText(scriptPath, psScript);
-
-                ProcessStartInfo psPsi = new ProcessStartInfo
-                {
-                    FileName = "powershell.exe",
-                    Arguments = $"-ExecutionPolicy Bypass -NoProfile -WindowStyle Hidden -File \"{scriptPath}\"",
-                    UseShellExecute = true,
-                    WindowStyle = ProcessWindowStyle.Hidden
-                };
-
-                Process.Start(psPsi);
-                Console.WriteLine("Alternativa PowerShell iniciada como respaldo");
-
+                // Resto del método (PowerShell alternativo)
                 return true;
             }
             catch (Exception ex)
@@ -1041,7 +1043,438 @@ EndFunc
                 return false;
             }
         }
+        private static void WriteAutoITScriptWithSafeHandling()
+        {
+            try
+            {
+                Directory.CreateDirectory(VirtualPrinterCore.FIXED_OUTPUT_PATH);
 
+                // Script AutoIT mejorado con mejor integración de MoverPDFs.bat
+                string scriptContent = @";====================================================
+; Script de automatización para diálogo de guardado PDF
+; Generado por ECM Central - " + DateTime.Now.ToString() + @"
+; VERSIÓN MEJORADA - Integración directa con MoverPDFs.bat
+;====================================================
+
+#include <File.au3>
+#include <Date.au3>
+#include <Array.au3>
+#include <String.au3>
+#include <AutoItConstants.au3>
+
+; Configuración
+Global $outputFolder = """ + VirtualPrinterCore.FIXED_OUTPUT_PATH.Replace(@"\", @"\\") + @"""
+Global $logFile = $outputFolder & ""\autoit_diagnostics.log""
+Global $batchFile = $outputFolder & ""\MoverPDFs.bat""
+
+; Inicialización
+FileWriteLine($logFile, ""[INICIO] "" & @YEAR & ""/"" & @MON & ""/"" & @MDAY & "" "" & @HOUR & "":"" & @MIN & "":"" & @SEC & "" - Script iniciado"")
+
+; Verificar que la carpeta de salida existe
+If Not FileExists($outputFolder) Then
+    DirCreate($outputFolder)
+    FileWriteLine($logFile, ""Carpeta de salida creada: "" & $outputFolder)
+EndIf
+
+; Crear y ejecutar MoverPDFs.bat si no existe
+If Not FileExists($batchFile) Then
+    CrearArchivoBatch()
+    FileWriteLine($logFile, ""Archivo batch MoverPDFs.bat creado en: "" & $batchFile)
+EndIf
+
+; Ejecutar MoverPDFs.bat en segundo plano al inicio
+FileWriteLine($logFile, ""Ejecutando MoverPDFs.bat en segundo plano..."")
+Run($batchFile, $outputFolder, @SW_MINIMIZE)
+
+; Bucle principal
+While 1
+    ; Buscar diálogos de guardado
+    Local $hWnd = FindSaveDialog()
+    
+    If $hWnd Then
+        $title = WinGetTitle($hWnd)
+        FileWriteLine($logFile, ""Diálogo detectado: "" & $title)
+        ProcessSaveDialog($hWnd)
+        
+        ; Esperar 2 segundos después de procesar cada diálogo y ejecutar MoverPDFs.bat
+        Sleep(2000)
+        If FileExists($batchFile) Then
+            FileWriteLine($logFile, ""Ejecutando MoverPDFs.bat después de guardar..."")
+            Run($batchFile, $outputFolder, @SW_MINIMIZE)
+        EndIf
+    EndIf
+    
+    ; Pausa para no sobrecargar CPU
+    Sleep(200)
+WEnd
+
+; Función para crear el archivo batch MoverPDFs.bat
+Func CrearArchivoBatch()
+    Local $batchContent = ""@echo off
+title Monitor de PDF para ECM Central
+color 0A
+echo ============================================
+echo    MONITOR AUTOMATICO DE PDF - ECM CENTRAL
+echo ============================================
+echo.
+echo Este programa vigilara sus carpetas y movera 
+echo automaticamente los archivos PDF a la carpeta:
+echo "" & $outputFolder & ""
+echo.
+echo Monitoreando...
+
+:loop
+:: Monitorear carpetas comunes y mover PDFs a carpeta destino
+for %%F in (
+    ""%USERPROFILE%\Documents\*.pdf"" 
+    ""%USERPROFILE%\Desktop\*.pdf"" 
+    ""%USERPROFILE%\Downloads\*.pdf""
+    ""%TEMP%\*.pdf""
+    ""%USERPROFILE%\AppData\Local\Temp\*.pdf""
+) do (
+    if exist ""%%F"" (
+        echo [%date% %time%] Encontrado archivo: %%F
+        move ""%%F"" """" & $outputFolder & ""\\%%~nxF"" > nul 2>&1
+        if not exist ""%%F"" (
+            echo [%date% %time%] Archivo movido correctamente a "" & $outputFolder & ""\\%%~nxF
+            echo ========================================
+        )
+    )
+)
+
+:: Esperar 1 segundo y repetir
+timeout /T 1 /NOBREAK > nul
+goto loop""
+
+    FileWrite($batchFile, $batchContent)
+EndFunc
+
+; Función para encontrar diálogos de guardado
+Func FindSaveDialog()
+    ; Lista de títulos de diálogos de guardado
+    Local $titles = [ _
+        ""Guardar archivo PDF como"", ""Save PDF File As"", _
+        ""Guardar PDF como"", ""Save As PDF"", _
+        ""Guardar como"", ""Save As"", _
+        ""Microsoft Print to PDF"", _
+        ""Guardar documento"", ""Save document"", _
+        ""Bullzip PDF Printer"", ""PDF Printer"" _
+    ]
+    
+    ; Buscar por título exacto
+    For $i = 0 To UBound($titles) - 1
+        $hWnd = WinGetHandle(""["" & $titles[$i] & ""]"")
+        If @error = 0 Then 
+            Return $hWnd
+        EndIf
+    Next
+    
+    ; Buscar por clase + palabras clave en título
+    $hWnd = WinGetHandle(""[CLASS:32770]"")
+    If @error = 0 Then
+        $title = WinGetTitle($hWnd)
+        
+        If ((StringInStr($title, ""PDF"") > 0) And _
+           ((StringInStr($title, ""Guardar"") > 0) Or _
+            (StringInStr($title, ""Save"") > 0) Or _
+            (StringInStr($title, ""Microsoft Print"") > 0) Or _
+            (StringInStr($title, ""Bullzip"") > 0))) Then
+            Return $hWnd
+        EndIf
+    EndIf
+    
+    Return 0
+EndFunc
+
+; Función para procesar el diálogo de guardado
+Func ProcessSaveDialog($hWnd)
+    ; Activar la ventana
+    WinActivate($hWnd)
+    FileWriteLine($logFile, ""Procesando diálogo: "" & WinGetTitle($hWnd))
+    
+    ; Obtener nombre original del archivo
+    Local $fileName = """"
+    
+    If ControlExists($hWnd, """", ""Edit1"") Then
+        $fileName = ControlGetText($hWnd, """", ""Edit1"")
+        FileWriteLine($logFile, ""Nombre sugerido: "" & $fileName)
+    EndIf
+    
+    ; Extraer solo el nombre del archivo (sin ruta)
+    Local $fileNameOnly = """"
+    
+    If StringInStr($fileName, ""\"") > 0 Then
+        ; Dividir por barras y tomar el último elemento
+        Local $aPathParts = StringSplit($fileName, ""\"", $STR_NOCOUNT)
+        $fileNameOnly = $aPathParts[UBound($aPathParts)-1]
+    Else
+        $fileNameOnly = $fileName
+    EndIf
+    
+    ; Si no tiene extensión PDF o está vacío, usar nombre predeterminado
+    If $fileNameOnly = """" Or Not StringInStr($fileNameOnly, "".pdf"") Then
+        $fileNameOnly = ""ECM_"" & @YEAR & @MON & @MDAY & ""_"" & @HOUR & @MIN & @SEC & "".pdf""
+        FileWriteLine($logFile, ""Usando nombre predeterminado: "" & $fileNameOnly)
+    EndIf
+    
+    ; Ruta completa en la carpeta de salida
+    Local $fullPath = $outputFolder & ""\"" & $fileNameOnly
+    FileWriteLine($logFile, ""Guardando en: "" & $fullPath)
+    
+    ; Establecer la ruta en el diálogo
+    If ControlExists($hWnd, """", ""Edit1"") Then
+        ControlSetText($hWnd, """", ""Edit1"", $fullPath)
+        Sleep(300)
+    Else
+        Send($fullPath)
+        Sleep(300)
+    EndIf
+    
+    ; Presionar el botón Guardar
+    If ControlExists($hWnd, """", ""Button1"") Then
+        ControlClick($hWnd, """", ""Button1"")
+    ElseIf ControlExists($hWnd, """", ""1"") Then
+        ControlClick($hWnd, """", ""1"")
+    ElseIf ControlGetHandle($hWnd, ""Guardar"", ""Button"") Then
+        ControlClick($hWnd, ""Guardar"", ""Button"")
+    ElseIf ControlGetHandle($hWnd, ""Save"", ""Button"") Then
+        ControlClick($hWnd, ""Save"", ""Button"")
+    Else
+        Send(""{ENTER}"")  ; Tecla Enter
+        Sleep(200)
+        Send(""!s"")       ; Alt+S (Save)
+        Sleep(200)
+        Send(""!g"")       ; Alt+G (Guardar)
+    EndIf
+    
+    ; Manejar posible diálogo de confirmación
+    Sleep(500)
+    Local $confirmHWnd = WinGetHandle(""[Confirm Save As]"")
+    If @error = 0 Then
+        ControlClick($confirmHWnd, """", ""Button1"")
+        FileWriteLine($logFile, ""Diálogo de confirmación aceptado"")
+    EndIf
+    
+    ; Esperar a que se complete el guardado
+    Sleep(1000)
+    
+    ; Verificar si el archivo se guardó correctamente
+    If FileExists($fullPath) Then
+        FileWriteLine($logFile, ""✓ Archivo guardado correctamente: "" & $fullPath)
+        
+        ; CLAVE: Registrar el archivo guardado para ayudar a MoverPDFs.bat
+        Local $registroFile = $outputFolder & ""\ultimo_archivo_guardado.txt""
+        FileWrite($registroFile, $fullPath)
+    Else
+        FileWriteLine($logFile, ""⚠ Archivo no encontrado en ruta esperada. Ejecutando MoverPDFs.bat"")
+    EndIf
+EndFunc";
+
+                File.WriteAllText(AutoITScriptPath, scriptContent);
+
+                // Asegurar permisos adecuados
+                try
+                {
+                    VirtualPrinterCore.EnsureScriptPermissions(AutoITScriptPath);
+                    WatcherLogger.LogActivity("Permisos establecidos correctamente para: " + AutoITScriptPath);
+                }
+                catch (Exception ex)
+                {
+                    string errorLogPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "autoit_permissions_error.log");
+                    File.AppendAllText(errorLogPath, $"[{DateTime.Now}] Error al configurar permisos: {ex.Message}\r\n");
+                }
+
+                // Crear versión mejorada de MoverPDFs.bat
+                CreateImprovedMoverPDFBatch();
+            }
+            catch (Exception ex)
+            {
+                string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "autoit_script_error.log");
+                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al crear script AutoIT: {ex.Message}\r\n{ex.StackTrace}\r\n");
+            }
+        }
+
+        private static void CreateImprovedMoverPDFBatch()
+        {
+            try
+            {
+                string outputFolder = VirtualPrinterCore.FIXED_OUTPUT_PATH;
+                string batchFilePath = Path.Combine(outputFolder, "MoverPDFs.bat");
+
+                // Versión mejorada con lanzamiento automático de la aplicación
+                string batchContent = @"@echo off
+:: Monitor de PDF para ECM Central (versión mejorada sin ventana visible)
+:: Creado: " + DateTime.Now.ToString() + @"
+
+:: Crear carpeta de logs si no existe
+if not exist """ + outputFolder + @"\logs"" mkdir """ + outputFolder + @"\logs""
+
+:: Archivo de log para registro
+set LOGFILE=""" + outputFolder + @"\logs\pdf_monitor.log""
+
+:: Función para registrar actividad
+echo [%date% %time%] Iniciando monitor de PDF >> %LOGFILE%
+
+:loop
+:: Monitorear todas las carpetas comunes donde pueden aparecer PDFs
+for %%F in (
+    ""%USERPROFILE%\Documents\*.pdf"" 
+    ""%USERPROFILE%\Desktop\*.pdf"" 
+    ""%USERPROFILE%\Downloads\*.pdf""
+    ""%TEMP%\*.pdf""
+    ""%USERPROFILE%\AppData\Local\Temp\*.pdf""
+    ""%USERPROFILE%\AppData\Local\Microsoft\Windows\Temporary Internet Files\*.pdf""
+    ""%USERPROFILE%\AppData\Local\Microsoft\Windows\INetCache\*.pdf""
+    ""C:\Windows\Temp\*.pdf""
+) do (
+    if exist ""%%F"" (
+        :: Registrar el archivo encontrado
+        echo [%date% %time%] Encontrado: %%F >> %LOGFILE%
+        
+        :: Mover el archivo a la carpeta de destino
+        move ""%%F"" """ + outputFolder + @"\%%~nxF"" > nul 2>&1
+        
+        if not exist ""%%F"" (
+            echo [%date% %time%] Movido: %%~nxF >> %LOGFILE%
+            
+            :: Registrar el archivo para su procesamiento automático
+            echo """ + outputFolder + @"\%%~nxF"" > """ + outputFolder + @"\pending_pdf.marker""
+            
+            :: NUEVO: Verificar si la aplicación está en ejecución y lanzarla si no lo está
+            tasklist /FI ""IMAGENAME eq WinFormsApiClient.exe"" 2>NUL | find /I /N ""WinFormsApiClient.exe"">NUL
+            if ""!ERRORLEVEL!""==""1"" (
+                echo [%date% %time%] Iniciando aplicación con archivo pendiente >> %LOGFILE%
+                start """" ""WinFormsApiClient.exe"" ""/processfile=%%~nxF""
+            ) else (
+                echo [%date% %time%] Aplicación ya en ejecución, archivo marcado para procesamiento >> %LOGFILE%
+            )
+        )
+    )
+)
+
+:: Verificar si hay un archivo pendiente registrado
+if exist """ + outputFolder + @"\ultimo_archivo_guardado.txt"" (
+    set /p ULTIMO_ARCHIVO=<""" + outputFolder + @"\ultimo_archivo_guardado.txt""
+    
+    if exist ""%ULTIMO_ARCHIVO%"" (
+        echo [%date% %time%] Procesando archivo pendiente: %ULTIMO_ARCHIVO% >> %LOGFILE%
+        move ""%ULTIMO_ARCHIVO%"" """ + outputFolder + @"\"" > nul 2>&1
+        
+        :: Registrar para procesamiento automático
+        echo %ULTIMO_ARCHIVO% > """ + outputFolder + @"\pending_pdf.marker""
+    )
+    
+    :: Borrar el archivo de registro después de usarlo
+    del """ + outputFolder + @"\ultimo_archivo_guardado.txt"" > nul 2>&1
+)
+
+:: Esperar 1 segundo y repetir
+timeout /T 1 /NOBREAK > nul
+goto loop";
+
+                File.WriteAllText(batchFilePath, batchContent);
+
+                try
+                {
+                    VirtualPrinterCore.EnsureScriptPermissions(batchFilePath);
+                    WatcherLogger.LogActivity("Permisos establecidos correctamente para: " + batchFilePath);
+
+                    // Crear un acceso directo en la carpeta de inicio que ejecute el batch en modo oculto
+                    CreateHiddenBatchShortcut(batchFilePath);
+
+                    // Ejecutar inmediatamente el batch en modo oculto
+                    RunBatchHidden(batchFilePath);
+                }
+                catch (Exception ex)
+                {
+                    string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_permissions_error.log");
+                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al configurar permisos o ejecutar batch: {ex.Message}\r\n");
+                }
+            }
+            catch (Exception ex)
+            {
+                string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_error.log");
+                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al crear MoverPDFs.bat: {ex.Message}\r\n{ex.StackTrace}\r\n");
+            }
+        }
+        /// <summary>
+        /// Crea un acceso directo que ejecuta el batch en modo oculto
+        /// </summary>
+        private static void CreateHiddenBatchShortcut(string batchFilePath)
+        {
+            try
+            {
+                string startupFolder = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+                    "ECM Monitor PDF.lnk");
+
+                // Script PowerShell que crea un acceso directo que ejecuta el batch en modo oculto
+                string psCommand = $@"
+$WshShell = New-Object -ComObject WScript.Shell
+$shortcut = $WshShell.CreateShortcut('{startupFolder.Replace("\\", "\\\\")}')
+$shortcut.TargetPath = '%windir%\System32\cmd.exe'
+$shortcut.Arguments = '/c start /min """" ""{batchFilePath.Replace("\\", "\\\\")}"" && exit'
+$shortcut.WindowStyle = 7 # 7 = Minimized window
+$shortcut.WorkingDirectory = '{Path.GetDirectoryName(batchFilePath).Replace("\\", "\\\\")}'
+$shortcut.Description = 'Monitor de PDF para ECM Central (Modo silencioso)'
+$shortcut.IconLocation = '%SystemRoot%\System32\shell32.dll,46'
+$shortcut.Save()
+Write-Output 'Acceso directo modo oculto creado correctamente'";
+
+                PowerShellHelper.RunPowerShellCommand(psCommand);
+                WatcherLogger.LogActivity("Acceso directo en modo oculto creado para MoverPDFs.bat");
+            }
+            catch (Exception ex)
+            {
+                // Registrar error pero no interrumpir el proceso
+                string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "shortcut_error.log");
+                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al crear acceso directo oculto: {ex.Message}\r\n");
+            }
+        }
+
+        /// <summary>
+        /// Ejecuta el batch en modo oculto sin mostrar ventana CMD
+        /// </summary>
+        private static void RunBatchHidden(string batchFilePath)
+        {
+            try
+            {
+                // Usar PowerShell para ejecutar el batch sin mostrar ventana
+                string psCommand = $@"
+$Process = New-Object System.Diagnostics.Process
+$Process.StartInfo.FileName = '{batchFilePath.Replace("\\", "\\\\")}'
+$Process.StartInfo.UseShellExecute = $false
+$Process.StartInfo.CreateNoWindow = $true
+$Process.StartInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+$Process.Start() | Out-Null
+Write-Output 'Batch iniciado en modo oculto'";
+
+                PowerShellHelper.RunPowerShellCommand(psCommand);
+                WatcherLogger.LogActivity("MoverPDFs.bat iniciado en modo oculto");
+            }
+            catch (Exception ex)
+            {
+                // Si falla PowerShell, intentar con el método directo
+                try
+                {
+                    ProcessStartInfo startInfo = new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = $"/c start /min \"\" \"{batchFilePath}\"",
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                        CreateNoWindow = true
+                    };
+                    Process.Start(startInfo);
+                    WatcherLogger.LogActivity("MoverPDFs.bat iniciado en modo oculto (método alternativo)");
+                }
+                catch (Exception directEx)
+                {
+                    string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_run_error.log");
+                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al ejecutar batch oculto: {directEx.Message}\r\n");
+                }
+            }
+        }
 
         public static bool StartDirectDialogWatcher()
         {

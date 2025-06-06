@@ -2,6 +2,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using WinFormsApiClient.VirtualPrinter;
@@ -188,69 +189,43 @@ namespace WinFormsApiClient.VirtualWatcher
             }
         }
 
-        /// <summary>
-        /// Establece un archivo PDF en el formulario principal
-        /// </summary>
-        public bool SetFileInActiveForm(FormularioForm form, string pdfPath)
+        public bool SetFileInActiveForm(FormularioForm form, string filePath)
         {
-            WatcherLogger.LogActivity($"Estableciendo archivo en formulario: {pdfPath}");
+            if (form == null || string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                return false;
 
             try
             {
-                if (form.InvokeRequired)
-                {
-                    WatcherLogger.LogActivity("Se requiere InvokeRequired");
+                WatcherLogger.LogActivity($"Intentando establecer archivo {filePath} en formulario activo");
 
-                    bool success = false;
-                    form.Invoke(new Action(() => {
-                        try
-                        {
-                            // Establecer el archivo PDF en el formulario
-                            WatcherLogger.LogActivity("Estableciendo archivo PDF en formulario a través de Invoke");
-                            form.EstablecerArchivoSeleccionado(pdfPath);
-                            form.Activate();
+                // Usar BeginInvoke para no bloquear el hilo actual
+                form.BeginInvoke((Action)(() => {
+                    try
+                    {
+                        // Llamar al método de establecer archivo en el formulario
+                        form.EstablecerArchivoSeleccionado(filePath);
 
-                            // Mostrar mensaje
-                            MessageBox.Show(
-                                $"Se ha detectado un nuevo documento impreso:\n\n{Path.GetFileName(pdfPath)}\n\n" +
-                                "Por favor, complete los metadatos y pulse 'Enviar' para subirlo al servidor.",
-                                "Nuevo documento recibido",
-                                MessageBoxButtons.OK,
-                                MessageBoxIcon.Information);
+                        // Mostrar un mensaje al usuario
+                        MessageBox.Show(
+                            $"Se ha cargado automáticamente el documento:\n{Path.GetFileName(filePath)}\n\n" +
+                            "Complete los datos necesarios y pulse 'Enviar' para subirlo al servidor.",
+                            "Documento cargado automáticamente",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
 
-                            success = true;
-                        }
-                        catch (Exception ex)
-                        {
-                            WatcherLogger.LogError("Error en Invoke al establecer archivo", ex);
-                            success = false;
-                        }
-                    }));
+                        WatcherLogger.LogActivity($"Archivo establecido correctamente en formulario activo");
+                    }
+                    catch (Exception ex)
+                    {
+                        WatcherLogger.LogError($"Error al establecer archivo en UI", ex);
+                    }
+                }));
 
-                    return success;
-                }
-                else
-                {
-                    WatcherLogger.LogActivity("No se requiere InvokeRequired, procediendo directamente");
-
-                    // Ya estamos en el thread de UI
-                    form.EstablecerArchivoSeleccionado(pdfPath);
-                    form.Activate();
-
-                    // Mostrar mensaje
-                    MessageBox.Show(
-                        $"Se ha detectado un nuevo documento impreso:\n\n{Path.GetFileName(pdfPath)}\n\n" +
-                        "Por favor, complete los metadatos y pulse 'Enviar' para subirlo al servidor.",
-                        "Nuevo documento recibido",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
-
-                    return true;
-                }
+                return true;
             }
             catch (Exception ex)
             {
-                WatcherLogger.LogError("Error al establecer archivo en formulario", ex);
+                WatcherLogger.LogError("Error en SetFileInActiveForm", ex);
                 return false;
             }
         }
@@ -362,7 +337,88 @@ namespace WinFormsApiClient.VirtualWatcher
                 return SystemIcons.Application;
             }
         }
+        /// <summary>
+        /// Método con soporte de timeout y cancelación
+        /// </summary>
+        /// <returns>True si la operación fue exitosa, False en caso contrario</returns>
+        public bool SetFileInActiveFormWithTimeout(FormularioForm form, string filePath, CancellationToken cancellationToken)
+        {
+            if (form == null || string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                return false;
 
+            try
+            {
+                WatcherLogger.LogActivity($"Intentando establecer archivo {filePath} en formulario activo (con timeout)");
+
+                // Bloquear para evitar interacciones múltiples
+                var syncEvent = new ManualResetEvent(false);
+                bool success = false;
+
+                form.BeginInvoke((Action)(() => {
+                    try
+                    {
+                        // Si el formulario está cargando gabinetes, esperar
+                        if (!TryWaitForFormReady(form))
+                        {
+                            WatcherLogger.LogActivity("Formulario no está listo, marcando archivo para procesar después");
+                            success = false;
+                        }
+                        else
+                        {
+                            // Llamar al método de establecer archivo en el formulario
+                            form.EstablecerArchivoSeleccionado(filePath);
+                            success = true;
+                            WatcherLogger.LogActivity($"Archivo establecido correctamente en formulario activo");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        WatcherLogger.LogError($"Error al establecer archivo en UI", ex);
+                        success = false;
+                    }
+                    finally
+                    {
+                        syncEvent.Set(); // Señalizar que hemos terminado
+                    }
+                }));
+
+                // Esperar a que termine la operación o se cancele
+                return syncEvent.WaitOne(10000) && success; // Esperar máximo 10 segundos
+            }
+            catch (Exception ex)
+            {
+                WatcherLogger.LogError("Error en SetFileInActiveFormWithTimeout", ex);
+                return false;
+            }
+        }
+
+        // NUEVO: Método para verificar si el formulario está listo
+        private bool TryWaitForFormReady(FormularioForm form)
+        {
+            // Verificar si el formulario tiene la propiedad _cabinetesLoaded
+            var cabinetesLoadedField = form.GetType().GetField(
+                "_cabinetesLoaded",
+                System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance);
+
+            if (cabinetesLoadedField != null)
+            {
+                // Intentar esperar a que los gabinetes estén cargados
+                for (int i = 0; i < 20; i++) // Máximo 10 segundos (20 * 500ms)
+                {
+                    bool loaded = (bool)cabinetesLoadedField.GetValue(form);
+                    if (loaded)
+                        return true;
+
+                    Thread.Sleep(500); // Esperar medio segundo
+                }
+
+                return false; // Timeout esperando que los gabinetes se carguen
+            }
+
+            // Si no podemos acceder al campo, asumimos que está listo
+            return true;
+        }
         private static void LogError(string message, Exception ex)
         {
             try

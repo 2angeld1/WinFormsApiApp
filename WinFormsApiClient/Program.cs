@@ -6,7 +6,9 @@ using System.Diagnostics;
 using System.Linq;
 using WinFormsApiClient.VirtualWatcher;
 using System.Management;
-
+using System.Threading;
+using System.Runtime.InteropServices; // Añadir esta línea
+using System.Text; // Para Encoding
 namespace WinFormsApiClient
 {
     static class Program
@@ -17,6 +19,45 @@ namespace WinFormsApiClient
         [STAThread]
         static void Main(string[] args)
         {
+            Application.ThreadException += (sender, e) => {
+                try
+                {
+                    Console.WriteLine($"Excepción no controlada en hilo de UI: {e.Exception.Message}");
+                    Console.WriteLine($"Stack trace: {e.Exception.StackTrace}");
+
+                    // Registrar en archivo de log
+                    File.AppendAllText(
+                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_error_log.txt"),
+                        $"[{DateTime.Now}] Excepción en UI: {e.Exception.Message}\r\n{e.Exception.StackTrace}\r\n\r\n");
+
+                    MessageBox.Show(
+                        $"Se ha producido un error en la aplicación:\n{e.Exception.Message}\n\nLa aplicación intentará continuar.",
+                        "Error en la aplicación",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                }
+                catch
+                {
+                    // Si falla el manejo de excepciones, no podemos hacer mucho más
+                }
+            };
+
+            // Configurar manejo global para excepciones en otros hilos
+            AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
+                try
+                {
+                    var ex = e.ExceptionObject as Exception;
+                    Console.WriteLine($"Excepción no controlada en AppDomain: {ex?.Message}");
+
+                    File.AppendAllText(
+                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_error_log.txt"),
+                        $"[{DateTime.Now}] Excepción en AppDomain: {ex?.Message}\r\n{ex?.StackTrace}\r\n\r\n");
+                }
+                catch
+                {
+                    // Si falla el manejo de excepciones, no podemos hacer mucho más
+                }
+            };
             // Configurar manejo de excepciones no controladas
             AppDomain.CurrentDomain.UnhandledException += (s, e) => {
                 if (e.ExceptionObject is Exception ex)
@@ -38,7 +79,8 @@ namespace WinFormsApiClient
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-
+            // Configurar mecanismo de recuperación para evitar congelaciones
+            ConfigureApplicationRecovery();
             // Configurar inicio automático con Windows
             EnsureBackgroundMonitorStartsWithWindows();
 
@@ -104,7 +146,109 @@ namespace WinFormsApiClient
                 Application.Run(new LoginForm());
             }
         }
+        private static void ConfigureApplicationRecovery()
+        {
+            try
+            {
+                // Configurar recuperación de aplicación
+                ApplicationRecoveryManager.RegisterForApplicationRecovery(new ApplicationRecoveryManager.RecoveryCallback((state) =>
+                {
+                    try
+                    {
+                        // Generar un nombre de archivo único para cada proceso
+                        string uniqueFileName = $"ecm_recovery_{Process.GetCurrentProcess().Id}_{DateTime.Now:yyyyMMdd_HHmmss}.log";
+                        string recoveryLogPath = Path.Combine(
+                            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
+                            uniqueFileName);
 
+                        // Crear un mensaje de diagnóstico
+                        string recoveryMessage = $"[{DateTime.Now}] Recuperación iniciada desde estado de aplicación no respondiente\r\n";
+
+                        // Usar FileShare.ReadWrite para permitir acceso simultáneo si es necesario
+                        using (StreamWriter writer = new StreamWriter(recoveryLogPath, true, Encoding.UTF8))
+                        {
+                            writer.WriteLine(recoveryMessage);
+                            writer.WriteLine($"[{DateTime.Now}] Proceso ID: {Process.GetCurrentProcess().Id}");
+                            writer.WriteLine($"[{DateTime.Now}] Archivos abiertos en procesamiento:");
+
+                            // Añadir información sobre archivos en procesamiento
+                            try
+                            {
+                                string pendingFilePath = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
+                                if (File.Exists(pendingFilePath))
+                                {
+                                    string pendingFile = File.ReadAllText(pendingFilePath);
+                                    writer.WriteLine($"[{DateTime.Now}] Archivo pendiente: {pendingFile}");
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                writer.WriteLine($"[{DateTime.Now}] Error al leer archivo pendiente: {ex.Message}");
+                            }
+
+                            writer.Flush();
+                        }
+
+                        // Registrar en consola también
+                        Console.WriteLine(recoveryMessage);
+                        Console.WriteLine($"Log de recuperación creado en: {recoveryLogPath}");
+
+                        // Indicar a Windows que la recuperación fue exitosa
+                        ApplicationRecoveryManager.ApplicationRecoveryFinished(true);
+                        return 0;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error en recuperación: {ex.Message}");
+                        ApplicationRecoveryManager.ApplicationRecoveryFinished(false);
+                        return -1;
+                    }
+                }), IntPtr.Zero, 30000, 0);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al configurar recuperación: {ex.Message}");
+            }
+        }
+        /// <summary>
+        /// Proporciona acceso a la API de recuperación de aplicaciones de Windows
+        /// </summary>
+        internal static class ApplicationRecoveryManager
+        {
+            // Delegado para la función de callback de recuperación
+            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+            public delegate int RecoveryCallback(IntPtr pvParameter);
+
+            // Función P/Invoke para registrar la aplicación para recuperación
+            [DllImport("kernel32.dll")]
+            public static extern int RegisterApplicationRecoveryCallback(
+                RecoveryCallback pRecoveryCallback,
+                IntPtr pvParameter,
+                int dwPingInterval,
+                int dwFlags);
+
+            // Función P/Invoke para notificar que la recuperación ha finalizado
+            [DllImport("kernel32.dll")]
+            public static extern int ApplicationRecoveryFinished(
+                bool bSuccess);
+
+            // Función P/Invoke para cancelar la recuperación
+            [DllImport("kernel32.dll")]
+            public static extern int ApplicationRecoveryInProgress(
+                out bool pbCancelled);
+
+            /// <summary>
+            /// Envuelve la función nativa para registrar la recuperación de la aplicación
+            /// </summary>
+            public static void RegisterForApplicationRecovery(RecoveryCallback callback, IntPtr parameter, int pingInterval, int flags)
+            {
+                int result = RegisterApplicationRecoveryCallback(callback, parameter, pingInterval, flags);
+                if (result != 0)
+                {
+                    throw new InvalidOperationException($"Error al registrar para recuperación: código {result}");
+                }
+            }
+        }
         /// <summary>
         /// Previene que se ejecuten múltiples instancias del monitor de fondo
         /// </summary>
@@ -503,6 +647,18 @@ if ($task -eq $null) {{
                 string filePath = argument.Substring(13).Trim('"');
                 Console.WriteLine($"Procesando archivo PDF generado por Bullzip: {filePath}");
 
+                // Verificar si la ruta es relativa (solo nombre de archivo)
+                if (!Path.IsPathRooted(filePath))
+                {
+                    // Convertir a ruta absoluta usando la carpeta de salida
+                    filePath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, filePath);
+                }
+
+                // Guardar para uso posterior en caso de login
+                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
+                File.WriteAllText(tempFile, filePath);
+                Console.WriteLine($"Archivo pendiente guardado en: {tempFile}");
+
                 // Método directo para procesar el archivo
                 DirectProcessPdfFile(filePath);
                 return;
@@ -840,11 +996,11 @@ if ($task -eq $null) {{
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
 
                     // Reiniciar el servicio
-                    Process.Start(Application.ExecutablePath, "/backgroundmonitor");
+                    //Process.Start(Application.ExecutablePath, "/backgroundmonitor");
                     return;
                 }
 
-                bool success = VirtualPrinter.PrinterInstaller.InstallBackgroundMonitor();
+                bool success = VirtualPrinter.PrinterInstaller.InstallBackgroundMonitor(autoStart: false);
 
                 if (success)
                 {

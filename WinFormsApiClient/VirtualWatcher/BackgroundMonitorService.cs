@@ -1,12 +1,13 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using System;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Management;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Microsoft.Win32;
 using WinFormsApiClient.VirtualPrinter;
 
 namespace WinFormsApiClient.VirtualWatcher
@@ -140,6 +141,58 @@ namespace WinFormsApiClient.VirtualWatcher
 
                 WatcherLogger.LogError("Error al iniciar servicio de monitoreo", ex);
                 return false;
+            }
+        }
+        // Añadir este método para reforzar la detección de nuevos archivos
+        private static void CheckForNewPdfFiles()
+        {
+            try
+            {
+                string outputFolder = VirtualPrinterCore.GetOutputFolderPath();
+                if (!Directory.Exists(outputFolder))
+                    return;
+
+                // Obtener archivos recientes (últimos 30 segundos)
+                var recentFiles = Directory.GetFiles(outputFolder, "*.pdf")
+                    .Select(f => new FileInfo(f))
+                    .Where(f => (DateTime.Now - f.CreationTime).TotalSeconds < 30)
+                    .OrderByDescending(f => f.CreationTime)
+                    .ToList();
+
+                if (recentFiles.Count > 0)
+                {
+                    string newestFile = recentFiles[0].FullName;
+                    Console.WriteLine($"Nuevo archivo PDF detectado: {newestFile}");
+
+                    // Crear marcador para que la aplicación principal lo procese
+                    VirtualPrinterCore.CreatePendingFileMarker(newestFile);
+
+                    // Si la aplicación principal está en ejecución, notificarle
+                    Process[] processes = Process.GetProcessesByName(
+                        Path.GetFileNameWithoutExtension(Application.ExecutablePath));
+
+                    if (processes.Length > 1) // Más de una instancia (esta misma cuenta como una)
+                    {
+                        // La aplicación principal ya está en ejecución
+                        Console.WriteLine("Aplicación principal en ejecución, marcador creado para procesamiento");
+                    }
+                    else
+                    {
+                        // Iniciar la aplicación principal
+                        ProcessStartInfo startInfo = new ProcessStartInfo
+                        {
+                            FileName = Application.ExecutablePath,
+                            Arguments = $"/print:\"{newestFile}\"",
+                            UseShellExecute = true
+                        };
+                        Process.Start(startInfo);
+                        Console.WriteLine("Aplicación principal iniciada para procesar archivo");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al verificar nuevos PDFs: {ex.Message}");
             }
         }
         /// <summary>

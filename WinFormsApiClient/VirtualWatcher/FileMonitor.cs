@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Timers;
 using System.Windows.Forms; // Añadir esta referencia
@@ -385,6 +386,76 @@ namespace WinFormsApiClient.VirtualWatcher
 
                 // Reanudar el timer
                 _fileWatchTimer.Start();
+            }
+        }
+        // Reemplazar el método IsFileReady con una versión más robusta
+        public static bool IsFileReady(string filePath)
+        {
+            try
+            {
+                // Verificar que el archivo existe primero
+                if (!File.Exists(filePath))
+                    return false;
+
+                // Obtener tamaño inicial
+                long initialSize = new FileInfo(filePath).Length;
+
+                // Esperar un momento y verificar si el tamaño cambió
+                for (int i = 0; i < 5; i++)
+                {
+                    Thread.Sleep(500);
+                    try
+                    {
+                        long currentSize = new FileInfo(filePath).Length;
+                        // Si el tamaño no cambió en dos lecturas consecutivas,
+                        // probablemente el archivo está completo
+                        if (currentSize == initialSize && currentSize > 0)
+                        {
+                            try
+                            {
+                                // Intento final: abrir para lectura con permisos compartidos
+                                using (var stream = new FileStream(
+                                    filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                                {
+                                    // Leer algunos bytes para verificar acceso completo
+                                    byte[] buffer = new byte[1024];
+                                    int bytesRead = stream.Read(buffer, 0, buffer.Length);
+                                    return bytesRead > 0;
+                                }
+                            }
+                            catch (IOException)
+                            {
+                                // El archivo sigue bloqueado
+                                initialSize = currentSize; // Actualizar para siguiente iteración
+                                continue;
+                            }
+                        }
+
+                        // Actualizar tamaño para siguiente iteración
+                        initialSize = currentSize;
+                    }
+                    catch
+                    {
+                        // Error al leer tamaño, posiblemente bloqueado
+                        continue;
+                    }
+                }
+
+                // Como último recurso, intentar con permisos mínimos
+                try
+                {
+                    FileInfo info = new FileInfo(filePath);
+                    return info.Exists && info.Length > 0;
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            catch (Exception ex)
+            {
+                WatcherLogger.LogError($"Error verificando archivo {Path.GetFileName(filePath)}", ex);
+                return false;
             }
         }
 

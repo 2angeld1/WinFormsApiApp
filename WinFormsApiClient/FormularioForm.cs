@@ -1,23 +1,37 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Drawing;
-using System.Windows.Forms;
-using MaterialSkin;
+﻿using MaterialSkin;
 using MaterialSkin.Controls;
-using System.IO;
 using Newtonsoft.Json.Linq;
-using System.Linq;
-using static System.Windows.Forms.VisualStyles.VisualStyleElement.Menu;
-using System.Net.Http.Headers;
-using System.Net.Http;
-using System.Security.Cryptography;
-using System.Threading.Tasks;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Security.Cryptography;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
+using static System.Windows.Forms.VisualStyles.VisualStyleElement.Menu;
 
 namespace WinFormsApiClient
 {
     public partial class FormularioForm : MaterialForm
     {
+        private static readonly object _fileSelectionLock = new object();
+        private bool _isProcessingFile = false;
+        private System.Windows.Forms.Timer _fileLoadWatchdog;
+        private bool _cabinetesLoaded = false;
+        private Queue<string> _pendingFiles = new Queue<string>();
+        private System.Windows.Forms.Timer _pendingFilesTimer;
+        private System.Windows.Forms.Timer _uiWatchdogTimer;
+        private DateTime _lastUIActivity;
+
+        private Label statusLabel;
+        private string selectedFilePath;
+        private Label fileSizeLabel;
+
         // Clase auxiliar para los items de ComboBox
         private class ComboboxItem
         {
@@ -76,93 +90,667 @@ namespace WinFormsApiClient
         public FormularioForm()
         {
             InitializeComponent();
-            // Establecer el icono del formulario usando el icono global
+
+            // Inicializar sistema de diagnóstico
+            Diagnostics.Initialize();
+            Diagnostics.LogInfo("FormularioForm inicializado");
+
             this.Icon = AppIcon.DefaultIcon;
             ThemeManager.ApplyLightTheme(this);
+
+            // Crear e inicializar el control statusLabel
+            statusLabel = new Label();
+            statusLabel.AutoSize = true;
+            statusLabel.Location = new Point(20, this.ClientSize.Height - 30);
+            statusLabel.Text = "Listo";
+            statusLabel.ForeColor = Color.Gray;
+            this.Controls.Add(statusLabel);
+
             this.Load += new EventHandler(FormularioForm_Load);
+            ConfigurarAntiBloqueo();
+            ConfigurarAntiBloqueoEspecifico();
+            ConfigurarProcesadorArchivosPendientes();
+
+            // Registrar evento de cierre para finalizar diagnóstico
+            this.FormClosing += (s, e) => Diagnostics.Shutdown();
+
+            ConfigurarDetectorDeBloqueo();
         }
 
-        private async void FormularioForm_Load(object sender, EventArgs e)
+        private void ConfigurarDetectorDeBloqueo()
         {
-            Console.WriteLine("=== FormularioForm_Load iniciado ===");
+            // Inicializar el timestamp de actividad
+            _lastUIActivity = DateTime.Now;
+
+            // Configurar el timer para verificar responsividad de la UI
+            _uiWatchdogTimer = new System.Windows.Forms.Timer();
+            _uiWatchdogTimer.Interval = 5000; // Verificar cada 5 segundos
+
+            // Variable para seguimiento de la duración del periodo de inactividad
+            int inactivityWarnings = 0;
+
+            _uiWatchdogTimer.Tick += (s, e) => {
+                // Si han pasado más de 20 segundos desde la última actividad (aumentado de 10 a 20)
+                TimeSpan inactiveTime = DateTime.Now - _lastUIActivity;
+
+                // Verificar si hay alguna operación de procesamiento en curso
+                bool processingFiles = _isProcessingFile || _pendingFiles.Count > 0;
+
+                // Solo considerar bloqueo si no hay operaciones en curso
+                if (inactiveTime.TotalSeconds > 20 && !processingFiles)
+                {
+                    inactivityWarnings++;
+                    Console.WriteLine($"Posible inactividad detectada ({inactivityWarnings}), intentando actualizar la interfaz");
+
+                    // Forzar actualización de la UI
+                    Application.DoEvents();
+
+                    // Verificar si es un periodo de inactividad natural o un problema real
+                    if (inactivityWarnings >= 3)
+                    {
+                        // Tras 3 advertencias (15 segundos adicionales), considerar un problema real
+                        Console.WriteLine("ALERTA CRÍTICA: Posible congelación de la aplicación detectada");
+
+                        // Reiniciar el contador tras mostrar la alerta crítica
+                        inactivityWarnings = 0;
+
+                        // Intentar recuperar la aplicación liberando recursos si el problema persiste
+                        if (inactiveTime.TotalSeconds > 60)
+                        {
+                            LiberarRecursosYRecuperar();
+                        }
+                    }
+                }
+                else
+                {
+                    // Si hay actividad o procesamiento, reiniciar el contador de advertencias
+                    if (inactivityWarnings > 0)
+                    {
+                        inactivityWarnings = 0;
+                        Console.WriteLine("Actividad detectada, reiniciando contador de alertas");
+                    }
+                }
+            };
+
+            _uiWatchdogTimer.Start();
+
+            // Actualizar timestamp en eventos de UI
+            this.MouseMove += (s, e) => _lastUIActivity = DateTime.Now;
+            this.KeyDown += (s, e) => _lastUIActivity = DateTime.Now;
+            this.Click += (s, e) => _lastUIActivity = DateTime.Now; // Añadido evento Click
+
+            // Añadir manejadores para los principales controles interactivos
+            foreach (Control control in this.Controls)
+            {
+                AddActivityHandlers(control);
+            }
+        }
+
+        // Método auxiliar para añadir los manejadores de eventos de actividad recursivamente
+        private void AddActivityHandlers(Control control)
+        {
+            // Añadir manejadores para este control
+            control.MouseMove += (s, e) => _lastUIActivity = DateTime.Now;
+            control.Click += (s, e) => _lastUIActivity = DateTime.Now;
+            control.MouseClick += (s, e) => _lastUIActivity = DateTime.Now;
+
+            // Añadir recursivamente para todos los controles hijos
+            foreach (Control child in control.Controls)
+            {
+                AddActivityHandlers(child);
+            }
+        }
+        private void LiberarRecursosYRecuperar()
+        {
             try
             {
-                // Configurar la interfaz con el nuevo diseño
+                // Cancelar operaciones pendientes
+                // ...
+
+                // Liberar recursos
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+
+                // Reiniciar estados de procesamiento
+                UseWaitCursor = false;
+                statusLabel.Text = "Recuperado de bloqueo. Por favor, intente nuevamente.";
+
+                // Notificar al usuario
+                MessageBox.Show(
+                    "La aplicación se ha recuperado de un posible bloqueo.\n" +
+                    "Por favor, intente la operación nuevamente.",
+                    "Recuperación de bloqueo",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al intentar recuperar de bloqueo: {ex.Message}");
+            }
+        }
+        private void ConfigurarProcesadorArchivosPendientes()
+        {
+            try
+            {
+                // Inicializar la cola si no existe
+                if (_pendingFiles == null)
+                    _pendingFiles = new Queue<string>();
+
+                // Configurar timer con intervalo gradual y adaptable
+                _pendingFilesTimer = new System.Windows.Forms.Timer();
+                _pendingFilesTimer.Interval = 500; // Comenzar con 500ms
+                int consecutiveErrors = 0;
+
+                _pendingFilesTimer.Tick += (s, e) =>
+                {
+                    try
+                    {
+                        // Verificar marcadores primero - ANTES de procesar la cola existente
+                        BuscarArchivosPendientes();
+
+                        // Si hay muchos errores consecutivos, aumentar el intervalo para dar tiempo al sistema
+                        if (consecutiveErrors > 3)
+                        {
+                            _pendingFilesTimer.Interval = Math.Min(5000, _pendingFilesTimer.Interval * 2);
+                            Diagnostics.LogWarning($"Aumentando intervalo del timer a {_pendingFilesTimer.Interval}ms debido a errores consecutivos");
+                            consecutiveErrors = 0;
+                        }
+
+                        // Solo procesar archivos pendientes si los gabinetes están cargados
+                        if (_cabinetesLoaded && _pendingFiles.Count > 0 && !_isProcessingFile)
+                        {
+                            Diagnostics.LogInfo($"Procesando archivo pendiente. Cola: {_pendingFiles.Count} archivos");
+                            _isProcessingFile = true;
+
+                            string nextFile = _pendingFiles.Dequeue();
+
+                            // Actualizar la actividad de UI para prevenir falsos positivos de bloqueo
+                            _lastUIActivity = DateTime.Now;
+
+                            // Procesar archivo de forma segura en hilo de UI con timeout
+                            try
+                            {
+                                if (FileExistsSafe(nextFile))
+                                {
+                                    // Usar BeginInvoke con un callback para manejar finalización
+                                    this.BeginInvoke(new Action(() =>
+                                    {
+                                        try
+                                        {
+                                            // Activar mecanismo de protección contra bloqueos específico para carga de archivo
+                                            if (_fileLoadWatchdog != null)
+                                            {
+                                                _fileLoadWatchdog.Stop();
+                                                _fileLoadWatchdog.Start();
+                                            }
+
+                                            ProcesarArchivoSeleccionadoDirectamente(nextFile);
+
+                                            // Proceso exitoso, reducir el intervalo a un valor más rápido
+                                            if (_pendingFilesTimer.Interval > 500)
+                                            {
+                                                _pendingFilesTimer.Interval = 500;
+                                            }
+
+                                            consecutiveErrors = 0;
+                                        }
+                                        catch (Exception exInner)
+                                        {
+                                            consecutiveErrors++;
+                                            Diagnostics.LogError($"Error al procesar archivo en BeginInvoke: {nextFile}", exInner);
+                                        }
+                                        finally
+                                        {
+                                            _isProcessingFile = false;
+
+                                            // Desactivar watchdog de archivo específico
+                                            if (_fileLoadWatchdog != null)
+                                            {
+                                                _fileLoadWatchdog.Stop();
+                                            }
+                                        }
+                                    }));
+                                }
+                                else
+                                {
+                                    Diagnostics.LogWarning($"Archivo ya no existe: {nextFile}");
+                                    _isProcessingFile = false;
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                consecutiveErrors++;
+                                Diagnostics.LogError($"Error al procesar archivo pendiente: {nextFile}", ex);
+                                _isProcessingFile = false;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        consecutiveErrors++;
+                        Diagnostics.LogError("Error en el timer de archivos pendientes", ex);
+                        _isProcessingFile = false;
+                    }
+                };
+
+                // Iniciar el timer inmediatamente
+                _pendingFilesTimer.Start();
+                Diagnostics.LogInfo("Procesador de archivos pendientes configurado e iniciado");
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError("Error al configurar procesador de archivos pendientes", ex);
+            }
+        }
+
+        private void BuscarArchivosPendientes()
+        {
+            try
+            {
+                // Lista de posibles ubicaciones donde puede estar guardada la ruta del archivo
+                string[] markerPaths = {
+            Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt"),
+            Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "pending_pdf.marker"),
+            Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "pending_file.marker"), // Añadir este que faltaba
+            Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "last_bullzip_file.txt")
+        };
+
+                foreach (string markerPath in markerPaths)
+                {
+                    // Verificar si el marcador existe con un timeout adecuado para evitar bloqueos
+                    if (FileExistsSafe(markerPath))
+                    {
+                        try
+                        {
+                            // Leer el archivo marcador de forma segura
+                            string filePath = ReadFileSafe(markerPath);
+
+                            // Continuar solo si se obtuvo contenido válido
+                            if (string.IsNullOrWhiteSpace(filePath))
+                            {
+                                Diagnostics.LogWarning($"Marcador vacío o inválido: {markerPath}");
+                                TryDeleteFile(markerPath);
+                                continue;
+                            }
+
+                            // Limpiar y normalizar la ruta
+                            filePath = filePath.Trim().Replace("\"", "");
+
+                            Diagnostics.LogInfo($"Archivo pendiente encontrado en {markerPath}: {filePath}");
+
+                            // Verificar de forma segura si el archivo existe
+                            if (FileExistsSafe(filePath))
+                            {
+                                // Validar si ya está en la cola para evitar duplicados
+                                bool isDuplicate = false;
+                                foreach (string existingPath in _pendingFiles)
+                                {
+                                    if (string.Equals(existingPath, filePath, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        isDuplicate = true;
+                                        break;
+                                    }
+                                }
+
+                                if (!isDuplicate)
+                                {
+                                    _pendingFiles.Enqueue(filePath);
+                                    Diagnostics.LogInfo($"Archivo añadido a la cola: {filePath}");
+                                }
+
+                                // Borrar el marcador para evitar procesamiento repetido
+                                TryDeleteFile(markerPath);
+                            }
+                            else
+                            {
+                                Diagnostics.LogWarning($"Archivo indicado en marcador no existe: {filePath}");
+                                TryDeleteFile(markerPath);
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Diagnostics.LogError($"Error al procesar marcador {markerPath}", ex);
+                            // Intentar borrar el marcador problemático para evitar problemas futuros
+                            TryDeleteFile(markerPath);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError("Error en BuscarArchivosPendientes", ex);
+            }
+        }
+
+        // Métodos auxiliares de seguridad para operaciones de archivos
+        private bool FileExistsSafe(string path)
+        {
+            try
+            {
+                // Utilizar un timeout para evitar bloqueos en acceso a archivos
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                {
+                    return Task.Run(() => File.Exists(path), timeoutCts.Token).GetAwaiter().GetResult();
+                }
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError($"Error al verificar existencia de archivo: {path}", ex);
+                return false;
+            }
+        }
+
+        private string ReadFileSafe(string path)
+        {
+            try
+            {
+                // Utilizar un timeout para evitar bloqueos en lectura de archivos
+                using (var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                {
+                    return Task.Run(() => {
+                        // Usar FileShare.ReadWrite para permitir lectura incluso si está abierto por otro proceso
+                        using (var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                        using (var reader = new StreamReader(fileStream))
+                        {
+                            return reader.ReadToEnd();
+                        }
+                    }, timeoutCts.Token).GetAwaiter().GetResult();
+                }
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError($"Error al leer archivo: {path}", ex);
+                return string.Empty;
+            }
+        }
+
+        private void TryDeleteFile(string path)
+        {
+            try
+            {
+                // Intentar eliminar sin bloquear
+                Task.Run(() => {
+                    try { if (File.Exists(path)) File.Delete(path); }
+                    catch { /* Ignorar errores de eliminación */ }
+                });
+            }
+            catch { /* Ignorar errores en la tarea */ }
+        }
+        private async void FormularioForm_Load(object sender, EventArgs e)
+        {
+            // Watchdog timer más corto
+            System.Windows.Forms.Timer loadWatchdog = new System.Windows.Forms.Timer();
+            loadWatchdog.Interval = 10000; // 10 segundos
+            loadWatchdog.Tick += (s, args) => {
+                Diagnostics.LogWarning("ALERTA: FormularioForm_Load está tardando demasiado, forzando finalización");
+                loadWatchdog.Stop();
+                try
+                {
+                    // Configurar interfaz básica para que al menos sea usable
+                    ConfigurarInterfazMinima();
+                }
+                catch { /* ignorar errores */ }
+            };
+            loadWatchdog.Start();
+
+            try
+            {
+                Diagnostics.LogInfo("FormularioForm_Load iniciado");
+
+                // Configurar la interfaz con el nuevo diseño - operación más crítica primero
                 ConfigurarInterfaz();
 
-                // Verificar que existe una sesión activa
-                Console.WriteLine($"Verificando sesión - Token: {(string.IsNullOrEmpty(AppSession.Current.AuthToken) ? "No válido" : "Válido")}");
-
+                // Verificar sesión de forma ligera
                 if (string.IsNullOrEmpty(AppSession.Current.AuthToken))
                 {
-                    Console.WriteLine("Error: No hay token de autenticación válido");
-                    MessageBox.Show("La sesión no es válida. Por favor, inicie sesión nuevamente.", "Error de sesión", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Diagnostics.LogError("Error: No hay token de autenticación válido");
+                    MessageBox.Show("La sesión no es válida. Por favor, inicie sesión nuevamente.",
+                        "Error de sesión", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    loadWatchdog.Stop();
                     this.Close();
                     return;
                 }
 
-                // Personalizar el título con el nombre del usuario
-                Console.WriteLine($"Usuario actual: {AppSession.Current.UserName}");
+                // Actualizar el título con el nombre del usuario
                 this.Text = $"Gestor de documentos - {AppSession.Current.UserName}";
 
-                // Verificar licencias disponibles
-                Console.WriteLine("Verificando licencias disponibles...");
+                // Establecer bypass de licencia para desarrollo (evita bloqueos en esta etapa)
+                ECMVirtualPrinter.SetLicenseBypass(true);
+
+                // CORRECCIÓN: Cargar gabinetes de forma segura para la UI
                 try
                 {
-                    // Activa el bypass de licencias para desarrollo y pruebas
-                    ECMVirtualPrinter.SetLicenseBypass(true);
-                    Console.WriteLine("Bypass de verificación de licencia activado para desarrollo");
+                    // Preparar datos en segundo plano
+                    var cabinetsDictTask = await Task.Run(() => PrepararDatosGabinetes());
 
-                    // En entorno de producción se usaría:
-                    // await ECMVirtualPrinter.CheckLicenseAsync();
+                    // Actualizar UI en el hilo principal
+                    if (cabinetsDictTask != null)
+                    {
+                        // Ahora aplicamos los datos al UI desde el hilo principal
+                        ActualizarUIConGabinetes(cabinetsDictTask);
+                    }
                 }
-                catch (Exception licEx)
+                catch (Exception gabEx)
                 {
-                    Console.WriteLine($"Error al verificar licencias: {licEx.Message}");
-                    Console.WriteLine(licEx.StackTrace);
-
-                    // Si falla la verificación, activamos el bypass como respaldo
-                    ECMVirtualPrinter.SetLicenseBypass(true);
-                    Console.WriteLine("Bypass de licencia activado debido al error");
+                    Diagnostics.LogError($"Error al cargar gabinetes: {gabEx.Message}", gabEx);
                 }
 
-                // Habilitar botón del scanner según la licencia
-                //BtnScanToPortal.Enabled = (ECMVirtualPrinter.UserLicense & PrintProcessor.LicenseFeatures.Scan) == PrintProcessor.LicenseFeatures.Scan;
-                Console.WriteLine($"Botón Scan habilitado: {BtnScanToPortal.Enabled}");
-
-                // Cargar gabinetes disponibles
-                Console.WriteLine("Iniciando carga de gabinetes...");
-                CargarGabinetes();
-
-                // Configurar eventos para los cambios de selección en dropdowns
-                Console.WriteLine("Configurando eventos de dropdown...");
+                // Configurar eventos para los dropdowns
                 dropdown1.SelectedIndexChanged += Dropdown1_SelectedIndexChanged;
                 dropdown2.SelectedIndexChanged += Dropdown2_SelectedIndexChanged;
 
-                // Deshabilitar inicialmente los dropdowns de categoría y subcategoría
+                // Deshabilitar inicialmente los dropdowns dependientes
                 dropdown2.Enabled = false;
                 dropdown3.Enabled = false;
 
-                Console.WriteLine("=== FormularioForm_Load completado exitosamente ===");
+                // Todo ha ido bien, detener el watchdog
+                loadWatchdog.Stop();
+                Diagnostics.LogInfo("FormularioForm_Load completado exitosamente");
             }
             catch (Exception ex)
             {
-                Console.WriteLine("=== ERROR CRÍTICO EN FormularioForm_Load ===");
-                Console.WriteLine($"Tipo de excepción: {ex.GetType().Name}");
-                Console.WriteLine($"Mensaje: {ex.Message}");
-                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
-                if (ex.InnerException != null)
-                {
-                    Console.WriteLine($"Inner Exception: {ex.InnerException.Message}");
-                    Console.WriteLine($"Inner Stack Trace: {ex.InnerException.StackTrace}");
-                }
-                Console.WriteLine("========================================");
-
-                MessageBox.Show($"Error al cargar el formulario principal: {ex.Message}",
-                    "Error interno", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                loadWatchdog.Stop();
+                Diagnostics.LogError($"ERROR CRÍTICO en FormularioForm_Load: {ex.Message}", ex);
+                MessageBox.Show($"Error al cargar el formulario: {ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
+        // Método para preparar los datos de gabinetes en segundo plano
+        private Dictionary<string, Dictionary<string, object>> PrepararDatosGabinetes()
+        {
+            Diagnostics.LogInfo("Preparando datos de gabinetes en segundo plano");
+
+            try
+            {
+                if (AppSession.Current.Cabinets == null || AppSession.Current.Cabinets.Count == 0)
+                {
+                    Diagnostics.LogWarning("No hay gabinetes disponibles para cargar");
+                    return null;
+                }
+
+                // Crear un diccionario para los gabinetes
+                var cabinetsDict = new Dictionary<string, Dictionary<string, object>>();
+                Diagnostics.LogInfo($"Procesando {AppSession.Current.Cabinets.Count} gabinetes");
+
+                foreach (var cabinet in AppSession.Current.Cabinets)
+                {
+                    try
+                    {
+                        string cabinetId = cabinet.Key;
+                        Diagnostics.LogInfo($"Procesando gabinete con ID: {cabinetId}");
+
+                        // Convertir el valor a JObject para trabajar con él
+                        var jCabinet = JObject.FromObject(cabinet.Value);
+
+                        // Extraer el nombre del gabinete
+                        string cabinetName = jCabinet["cabinet_name"]?.ToString() ?? "Gabinete sin nombre";
+                        Diagnostics.LogInfo($"Gabinete ID: {cabinetId}, Nombre: {cabinetName}");
+
+                        // Guardar los datos para uso posterior
+                        cabinetsDict[cabinetId] = jCabinet.ToObject<Dictionary<string, object>>();
+                        cabinetsDict[cabinetId]["display_name"] = cabinetName;
+                    }
+                    catch (Exception ex)
+                    {
+                        Diagnostics.LogError($"Error procesando gabinete: {ex.Message}", ex);
+                    }
+                }
+
+                Diagnostics.LogInfo($"Datos de gabinetes preparados correctamente: {cabinetsDict.Count} gabinetes");
+                return cabinetsDict;
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError("Error al preparar datos de gabinetes", ex);
+                return null;
+            }
+        }
+
+        private void ActualizarUIConGabinetes(Dictionary<string, Dictionary<string, object>> cabinetsDict)
+        {
+            try
+            {
+                Diagnostics.LogInfo("Actualizando UI con datos de gabinetes");
+
+                // Limpiar dropdowns (ahora en el hilo UI)
+                dropdown1.Items.Clear();
+                dropdown2.Items.Clear();
+                dropdown3.Items.Clear();
+
+                // Añadir primer elemento de selección
+                dropdown1.Items.Add("Seleccione un archivador");
+                dropdown1.SelectedIndex = 0;
+
+                if (cabinetsDict != null && cabinetsDict.Count > 0)
+                {
+                    foreach (var cabinet in cabinetsDict)
+                    {
+                        string cabinetId = cabinet.Key;
+                        string cabinetName = cabinet.Value["display_name"]?.ToString() ?? "Gabinete sin nombre";
+
+                        // Crear un objeto personalizado para el ComboBox
+                        var cabinetItem = new ComboboxItem
+                        {
+                            Text = cabinetName,
+                            Value = cabinetId,
+                            Tag = cabinet.Value
+                        };
+
+                        dropdown1.Items.Add(cabinetItem);
+                        Diagnostics.LogInfo($"Añadido gabinete a UI: {cabinetName}");
+                    }
+
+                    // Guardar el diccionario para usarlo más tarde
+                    dropdown1.Tag = cabinetsDict;
+                    Diagnostics.LogInfo($"Total de gabinetes añadidos al dropdown: {dropdown1.Items.Count - 1}");
+                }
+                else
+                {
+                    Diagnostics.LogWarning("No hay gabinetes disponibles para mostrar en la UI");
+
+                    // Mostrar mensaje al usuario
+                    Label noGabinetsLabel = new Label();
+                    noGabinetsLabel.Text = "No hay gabinetes disponibles. Por favor, contacte con el administrador.";
+                    noGabinetsLabel.AutoSize = true;
+                    noGabinetsLabel.ForeColor = System.Drawing.Color.Red;
+                    noGabinetsLabel.Location = new Point(dropdown1.Location.X, dropdown1.Location.Y + dropdown1.Height + 10);
+                    this.Controls.Add(noGabinetsLabel);
+                }
+
+                // IMPORTANTE: Marcar que los gabinetes se han cargado
+                _cabinetesLoaded = true;
+                Diagnostics.LogInfo("Gabinetes cargados completamente - Listo para procesar archivos");
+
+                // Si hay archivos pendientes, iniciar el timer para procesarlos
+                if (_pendingFiles.Count > 0)
+                {
+                    Diagnostics.LogInfo($"Iniciando procesamiento de {_pendingFiles.Count} archivos pendientes");
+                    _pendingFilesTimer.Start();
+                }
+            }
+            catch (Exception ex)
+            {
+                Diagnostics.LogError("Error al actualizar UI con gabinetes", ex);
+                MessageBox.Show($"Error al cargar los gabinetes: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ConfigurarAntiBloqueoEspecifico()
+        {
+            _fileLoadWatchdog = new System.Windows.Forms.Timer();
+            _fileLoadWatchdog.Interval = 8000; // Reducir a 8 segundos para detectar antes los bloqueos
+            _fileLoadWatchdog.Tick += (s, e) => {
+                if (_isProcessingFile)
+                {
+                    Diagnostics.LogWarning("ALERTA: Posible bloqueo en carga de archivo detectado");
+
+                    try
+                    {
+                        // Forzar limpieza de estado
+                        _isProcessingFile = false;
+
+                        // Registrar diagnóstico antes de intentar recuperación
+                        Diagnostics.LogMemoryUsage();
+                        Diagnostics.LogThreadInfo();
+
+                        // Intentar volver a un estado consistente
+                        filePanelContainer.Visible = true;
+                        fileNameLabel.Text = "Se produjo un error al cargar el archivo. Intente seleccionarlo nuevamente.";
+                        fileTypeIcon.Image = null;
+
+                        // Forzar actualización de UI
+                        this.SuspendLayout();
+                        this.ResumeLayout(true);
+                        this.Refresh();
+                        Application.DoEvents();
+
+                        // Notificar al usuario
+                        MessageBox.Show(
+                            "Se detectó un problema al cargar el archivo. La aplicación ha sido recuperada automáticamente.\n\n" +
+                            "Se ha creado un archivo de diagnóstico en el escritorio.",
+                            "Recuperación automática",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                    catch (Exception ex)
+                    {
+                        Diagnostics.LogError("Error durante recuperación", ex);
+                    }
+                    finally
+                    {
+                        _fileLoadWatchdog.Stop();
+                    }
+                }
+            };
+
+            // Iniciar el watchdog tanto para selección manual como automática
+            this.BeginInvoke((Action)(() => {
+                SelectFileButton.Click += (s, e) => {
+                    Diagnostics.LogInfo("Iniciando watchdog por clic en SelectFileButton");
+                    _fileLoadWatchdog.Start();
+                };
+            }));
+        }        
+        // Método de respaldo para asegurar UI mínima en caso de problemas
+        private void ConfigurarInterfazMinima()
+        {
+            try
+            {
+                // Configuración mínima para que la UI sea usable
+                filePanelContainer.Visible = false;
+
+                // Habilitar controles esenciales
+                SelectFileButton.Enabled = true;
+                ResetButton.Enabled = true;
+
+                // Mensaje al usuario
+                MessageBox.Show("Se ha producido un error durante la carga del formulario. " +
+                    "Algunas funciones podrían no estar disponibles.",
+                    "Advertencia", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            catch { /* Ignorar errores */ }
+        }
         private void ConfigurarInterfaz()
         {
             // En ConfigurarInterfaz(), añade esta configuración para el fileDialog
@@ -531,6 +1119,9 @@ namespace WinFormsApiClient
                 fileNameLabel.Text = "";
                 filePanelContainer.Visible = false;
 
+                // Actualizar el timestamp de actividad de UI
+                _lastUIActivity = DateTime.Now;
+
                 Console.WriteLine("Todos los campos han sido limpiados");
                 MessageBox.Show("Todos los campos han sido limpiados", "Limpieza completada", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Console.WriteLine("=== ResetButton_Click completado ===");
@@ -546,7 +1137,6 @@ namespace WinFormsApiClient
                 MessageBox.Show($"Error al reiniciar el formulario: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-
         // Lógica para el botón de enviar
         private async void SubmitButton_Click(object sender, EventArgs e)
         {
@@ -1231,50 +1821,187 @@ namespace WinFormsApiClient
             public static extern void SHChangeNotify(int eventId, int flags, IntPtr item1, IntPtr item2);
         }
 
-        // Método que debe ser agregado a la clase FormularioForm
-        public void EstablecerArchivoSeleccionado(string filePath)
+        public async void EstablecerArchivoSeleccionado(string filePath)
         {
+            if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+            {
+                Console.WriteLine($"Archivo inválido o no existe: {filePath}");
+                return;
+            }
+
+            Console.WriteLine($"Estableciendo archivo seleccionado: {filePath}");
+
+            // Ejecutar el procesamiento en otro hilo para no bloquear la UI
+            await Task.Run(() => {
+                try
+                {
+                    // Verificar si el archivo existe y está accesible
+                    if (!File.Exists(filePath))
+                        return;
+
+                    // Crear una copia de trabajo para evitar bloqueos de archivo
+                    string tempFile = Path.Combine(
+                        Path.GetTempPath(),
+                        $"ecm_copy_{Guid.NewGuid().ToString().Substring(0, 8)}_{Path.GetFileName(filePath)}");
+
+                    try
+                    {
+                        File.Copy(filePath, tempFile, true);
+
+                        // Actualizar la UI en el hilo principal
+                        this.BeginInvoke((Action)(() => {
+                            ProcesarArchivoSeleccionadoDirectamente(tempFile);
+                        }));
+                    }
+                    catch (Exception copyEx)
+                    {
+                        Console.WriteLine($"Error al copiar archivo: {copyEx.Message}");
+
+                        // Si falla la copia, intentar con el original
+                        this.BeginInvoke((Action)(() => {
+                            ProcesarArchivoSeleccionadoDirectamente(filePath);
+                        }));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error en procesamiento asíncrono: {ex.Message}");
+                }
+            });
+        }
+        private async void ProcesarArchivoSeleccionadoDirectamente(string filePath)
+        {
+            // Crear un identificador único para esta operación
+            string operationId = Guid.NewGuid().ToString().Substring(0, 8);
+            Diagnostics.LogInfo($"[{operationId}] Iniciando procesamiento de archivo: {filePath}");
+
             try
             {
-                if (string.IsNullOrEmpty(filePath) || !File.Exists(filePath))
+                // Indicador visual de procesamiento
+                UseWaitCursor = true;
+
+                // Validaciones básicas en el hilo UI antes de cualquier operación async
+                if (string.IsNullOrEmpty(filePath))
                 {
-                    Console.WriteLine($"Ruta de archivo inválida: {filePath}");
+                    Diagnostics.LogWarning($"[{operationId}] Ruta de archivo inválida");
+                    UseWaitCursor = false;
                     return;
                 }
 
-                string extension = Path.GetExtension(filePath).ToLower();
-                // Verificar que sea un tipo de archivo permitido
-                if (extension == ".pdf" || extension == ".jpg" || extension == ".jpeg" ||
-                    extension == ".png" || extension == ".webp")
+                if (!File.Exists(filePath))
                 {
-                    fileLabel.Text = filePath;
-                    fileNameLabel.Text = Path.GetFileName(filePath);
+                    Diagnostics.LogWarning($"[{operationId}] El archivo no existe: {filePath}");
+                    UseWaitCursor = false;
+                    return;
+                }
 
-                    // Mostrar icono según tipo de archivo
-                    fileTypeIcon.Image = FileIcons.GetFileIcon(extension);
+                // Guardar el archivo que estamos procesando para acceso posterior
+                selectedFilePath = filePath;
 
-                    filePanelContainer.Visible = true;
-                    Console.WriteLine($"Archivo establecido automáticamente: {filePath}");
+                // Inicializar variables con valores predeterminados
+                string fileName = Path.GetFileName(filePath); // Valor por defecto
+                string fileExtension = Path.GetExtension(filePath).ToLower(); // Valor por defecto
+                long fileSize = 0;
 
-                    // Sugerir un título basado en el nombre del archivo
-                    if (string.IsNullOrEmpty(titulo.Text))
+                // Operación más pesada en Task.Run para evitar bloquear la UI
+                await Task.Run(() => {
+                    try
                     {
-                        titulo.Text = Path.GetFileNameWithoutExtension(filePath);
+                        Diagnostics.LogInfo($"[{operationId}] Obteniendo información del archivo en segundo plano");
+
+                        FileInfo info = new FileInfo(filePath);
+                        fileName = info.Name; // Actualizar con valor real
+                        fileExtension = info.Extension.ToLower(); // Actualizar con valor real
+                        fileSize = info.Length;
+
+                        // Simular operación que toma tiempo (para pruebas)
+                        Thread.Sleep(100);
+
+                        Diagnostics.LogInfo($"[{operationId}] Información obtenida: {fileName}, {fileSize} bytes");
                     }
-                }
-                else
-                {
-                    Console.WriteLine($"Tipo de archivo no soportado: {extension}");
-                }
+                    catch (Exception ex)
+                    {
+                        Diagnostics.LogError($"[{operationId}] Error al obtener información del archivo", ex);
+                        // No relanzar la excepción - usaremos los valores por defecto
+                    }
+                });
+
+                // Ya en el hilo de UI, actualizar la interfaz de forma segura
+                Diagnostics.LogInfo($"[{operationId}] Actualizando UI con información del archivo");
+
+                // Actualizar campos de la UI de forma segura con comprobaciones de null
+                if (fileNameLabel != null)
+                    fileNameLabel.Text = fileName;
+
+                if (fileLabel != null)
+                    fileLabel.Text = filePath;
+
+                // Actualizar icono según extensión
+                if (fileTypeIcon != null)
+                    fileTypeIcon.Image = FileIcons.GetFileIcon(fileExtension);
+
+                // Mostrar el panel con la información del archivo
+                if (filePanelContainer != null)
+                    filePanelContainer.Visible = true;
+
+                // Si el título está vacío, usar el nombre del archivo
+                if (titulo != null && string.IsNullOrEmpty(titulo.Text))
+                    titulo.Text = Path.GetFileNameWithoutExtension(filePath);
+
+                // Quitar indicador de procesamiento
+                UseWaitCursor = false;
+
+                // Actualizar tiempo de última actividad de UI para prevenir falsos positivos de bloqueo
+                _lastUIActivity = DateTime.Now;
+
+                Diagnostics.LogInfo($"[{operationId}] Procesamiento de archivo completado exitosamente");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"=== ERROR EN EstablecerArchivoSeleccionado ===");
-                Console.WriteLine($"Tipo de excepción: {ex.GetType().Name}");
-                Console.WriteLine($"Mensaje: {ex.Message}");
-                Console.WriteLine($"Stack Trace: {ex.StackTrace}");
-                Console.WriteLine("==========================================");
+                // Capturar cualquier error no manejado
+                Diagnostics.LogError($"[{operationId}] Error general en ProcesarArchivoSeleccionadoDirectamente", ex);
+                UseWaitCursor = false;
             }
+        }
+        private void ConfigurarAntiBloqueo()
+        {
+            // Crear un timer que detectará si la interfaz se bloquea
+            System.Windows.Forms.Timer antiFreeze = new System.Windows.Forms.Timer();
+            antiFreeze.Interval = 5000; // Verificar cada 5 segundos
+
+            DateTime lastActivity = DateTime.Now;
+
+            // Actualizar la marca de tiempo en diversos eventos de usuario
+            this.MouseMove += (s, e) => lastActivity = DateTime.Now;
+            this.KeyDown += (s, e) => lastActivity = DateTime.Now;
+            this.Click += (s, e) => lastActivity = DateTime.Now;
+
+            antiFreeze.Tick += (s, e) => {
+                // Si no ha habido actividad en 30 segundos y hay operaciones pendientes
+                if ((DateTime.Now - lastActivity).TotalSeconds > 30 &&
+                    !string.IsNullOrEmpty(fileLabel.Text) && filePanelContainer.Visible)
+                {
+                    Console.WriteLine("Posible bloqueo detectado, intentando recuperar la interfaz");
+
+                    // Forzar una actualización completa de la interfaz
+                    this.SuspendLayout();
+                    this.ResumeLayout(true);
+                    this.Refresh();
+
+                    // Si el problema persiste, sugerir al usuario que reinicie
+                    if ((DateTime.Now - lastActivity).TotalSeconds > 60)
+                    {
+                        antiFreeze.Stop();
+                        MessageBox.Show(
+                            "La aplicación parece estar respondiendo lentamente. Se recomienda guardar su trabajo y reiniciar la aplicación.",
+                            "Rendimiento reducido",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Warning);
+                    }
+                }
+            };
+
+            antiFreeze.Start();
         }
     }
 }

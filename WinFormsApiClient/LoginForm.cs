@@ -1,14 +1,16 @@
-﻿using System;
+﻿using MaterialSkin;
+using MaterialSkin.Controls;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using System.IO;
-using MaterialSkin;
-using MaterialSkin.Controls;
-using Newtonsoft.Json;
 namespace WinFormsApiClient
 {
     public partial class LoginForm : MaterialForm
@@ -43,26 +45,9 @@ namespace WinFormsApiClient
 
         private async void LoginForm_Load(object sender, EventArgs e)
         {
-            // Verificar si hay un archivo pendiente guardado
-            if (string.IsNullOrEmpty(pendingFilePath))
-            {
-                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
-                if (File.Exists(tempFile))
-                {
-                    try
-                    {
-                        pendingFilePath = File.ReadAllText(tempFile);
-                        Console.WriteLine($"Archivo pendiente recuperado: {pendingFilePath}");
+            // Mantener solo el archivo pendiente que se pasó al constructor
+            // y eliminar toda la lógica de búsqueda adicional
 
-                        // Limpiar el archivo temporal
-                        File.Delete(tempFile);
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error al recuperar archivo pendiente: {ex.Message}");
-                    }
-                }
-            }
             // Asegúrate de que la contraseña esté oculta por defecto
             this.passwordTextBox.Password = true;
 
@@ -74,16 +59,24 @@ namespace WinFormsApiClient
 
             // Cargar la imagen de ilustración
             LoadIllustrationImage();
-            // Verificar si hay archivos pendientes
-            CheckForPendingPdfFiles();
+
             // Configurar algunos detalles visuales adicionales
             ConfigureVisualElements();
 
-            // Procesar archivo pendiente si hay alguno
+            // Procesar solo el archivo pendiente explícitamente pasado al constructor
             if (!string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath))
             {
                 // Guardar el archivo pendiente para procesarlo después del login
                 Console.WriteLine($"Archivo pendiente para procesar después del login: {pendingFilePath}");
+
+                // Solo mostrar notificación al usuario si hay un archivo pendiente explícito
+                MessageBox.Show(
+                    $"Se ha encontrado un documento PDF pendiente de procesar.\n\n" +
+                    $"Archivo: {Path.GetFileName(pendingFilePath)}\n\n" +
+                    "Se cargará automáticamente después de iniciar sesión.",
+                    "Documento pendiente",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
             }
 
             // Asegurarse de que el formulario se dibuje correctamente
@@ -177,42 +170,7 @@ namespace WinFormsApiClient
                 CreateECMCentralLogoImage();
             }
         }
-        // Agregar este método a LoginForm.cs
-        private void CheckForPendingPdfFiles()
-        {
-            try
-            {
-                // Verificar si existe un archivo marcador
-                string markerFile = Path.Combine(
-                    VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
-                    "pending_pdf.marker");
-
-                if (File.Exists(markerFile))
-                {
-                    // Leer la ruta del archivo pendiente
-                    string filePath = File.ReadAllText(markerFile).Trim();
-
-                    // Eliminar el marcador
-                    try { File.Delete(markerFile); } catch { }
-
-                    if (File.Exists(filePath))
-                    {
-                        // Procesar el archivo pendiente
-                        WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(filePath);
-
-                        MessageBox.Show(
-                            $"Se ha procesado un documento PDF que estaba pendiente.",
-                            "Documento procesado",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al verificar archivos pendientes: {ex.Message}");
-            }
-        }
+        
         private void CreateECMCentralLogoImage()
         {
             try
@@ -296,11 +254,6 @@ namespace WinFormsApiClient
                     {
                         // Si la API devuelve TFA, pero decidimos ignorarlo
                         // Mostrar un mensaje opcional para informar al usuario
-                        // MessageBox.Show("Autenticación de dos factores omitida", "Información", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                        // Como omitimos el TFA, no tenemos el token completo todavía
-                        // En un entorno de producción esto debería manejarse correctamente
-                        // Aquí, para demo, simplemente iremos al formulario principal
                         MessageBox.Show("Tu cuenta requiere verificación de dos factores, pero se ha omitido para esta demo",
                             "Información", MessageBoxButtons.OK, MessageBoxIcon.Information);
                     }
@@ -317,36 +270,65 @@ namespace WinFormsApiClient
                     Hide();
                     MessageBox.Show("Login exitoso!", "Bienvenido", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
-                    // Verificar si hay archivo pendiente y asegurarse de que existe
+                    // SIMPLIFICADO: Solo usar el archivo pendiente que se pasó al constructor
                     bool hasPendingFile = !string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath);
                     Console.WriteLine($"¿Hay archivo pendiente? {hasPendingFile}, Ruta: {pendingFilePath}");
 
                     // Crear el formulario principal
                     FormularioForm formulario = new FormularioForm();
 
-                    // Si hay un archivo pendiente, configurarlo después de que el formulario se muestre
                     if (hasPendingFile)
                     {
-                        // Mostrar el formulario pero mantener referencia para configurar el archivo
-                        formulario.Show();
+                        try
+                        {
+                            // Mostrar el formulario
+                            formulario.Show();
 
-                        // Dar tiempo para que el formulario se inicialice completamente
-                        await Task.Delay(500);
+                            // Dar más tiempo para que el formulario se inicialice completamente
+                            await Task.Delay(1500);
 
-                        // Configurar el archivo
-                        Console.WriteLine($"Estableciendo archivo pendiente en FormularioForm: {pendingFilePath}");
-                        formulario.EstablecerArchivoSeleccionado(pendingFilePath);
+                            // Usar un enfoque más confiable: enviar mensaje al formulario
+                            formulario.BeginInvoke((Action)(() => {
+                                try
+                                {
+                                    // Primero verificar que el archivo exista y esté accesible
+                                    if (!File.Exists(pendingFilePath))
+                                    {
+                                        MessageBox.Show(
+                                            $"No se pudo acceder al archivo pendiente:\n{pendingFilePath}",
+                                            "Error de acceso a archivo",
+                                            MessageBoxButtons.OK,
+                                            MessageBoxIcon.Error);
+                                        return;
+                                    }
 
-                        // Informar al usuario
-                        MessageBox.Show(
-                            $"Se ha cargado automáticamente el documento impreso:\n{Path.GetFileName(pendingFilePath)}\n\n" +
-                            "Complete los datos necesarios y pulse 'Enviar' para subirlo al servidor.",
-                            "Documento cargado automáticamente",
-                            MessageBoxButtons.OK,
-                            MessageBoxIcon.Information);
+                                    // Usar directamente EstablecerArchivoSeleccionado que ya maneja la cola
+                                    formulario.EstablecerArchivoSeleccionado(pendingFilePath);
 
-                        // Limpiar la referencia al archivo pendiente
-                        pendingFilePath = null;
+                                    // Informar al usuario
+                                    MessageBox.Show(
+                                        $"Se ha cargado automáticamente el documento impreso:\n{Path.GetFileName(pendingFilePath)}\n\n" +
+                                        "Complete los datos necesarios y pulse 'Enviar' para subirlo al servidor.",
+                                        "Documento cargado automáticamente",
+                                        MessageBoxButtons.OK,
+                                        MessageBoxIcon.Information);
+                                }
+                                catch (Exception ex)
+                                {
+                                    Console.WriteLine($"Error al establecer archivo en formulario: {ex.Message}");
+                                    MessageBox.Show($"Ocurrió un error al cargar el archivo: {ex.Message}",
+                                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                }
+                            }));
+
+                            // Limpiar referencias
+                            pendingFilePath = null;
+                        }
+                        catch (Exception fileEx)
+                        {
+                            Console.WriteLine($"Error al procesar archivo pendiente: {fileEx.Message}");
+                            formulario.ShowDialog();
+                        }
                     }
                     else
                     {
@@ -370,7 +352,6 @@ namespace WinFormsApiClient
                 loginButton.Enabled = true;
             }
         }
-
         // Método para alternar la visibilidad de la contraseña
         private void ShowPasswordButton_Click(object sender, EventArgs e)
         {

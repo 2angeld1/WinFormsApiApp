@@ -421,7 +421,7 @@ namespace WinFormsApiClient.VirtualPrinter
         /// <summary>
         /// Instala el servicio de monitoreo para que se inicie automáticamente con Windows
         /// </summary>
-        public static bool InstallBackgroundMonitor()
+        public static bool InstallBackgroundMonitor(bool autoStart = true)
         {
             try
             {
@@ -441,8 +441,20 @@ namespace WinFormsApiClient.VirtualPrinter
                         LogHelper.LogMessage("log_install.txt", "La impresora virtual ya está instalada");
                     }
 
-                    // Iniciar el servicio inmediatamente si no está en ejecución
-                    Process.Start(Application.ExecutablePath, "/backgroundmonitor");
+                    // Iniciar el servicio inmediatamente si se solicita
+                    if (autoStart)
+                    {
+                        // Evitar ventanas CMD usando UseShellExecute=true y WindowStyle=Hidden
+                        ProcessStartInfo startInfo = new ProcessStartInfo
+                        {
+                            FileName = Application.ExecutablePath,
+                            Arguments = "/backgroundmonitor /silent",
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        };
+                        Process.Start(startInfo);
+                    }
+
                     return true;
                 }
 
@@ -460,8 +472,19 @@ namespace WinFormsApiClient.VirtualPrinter
                 {
                     LogHelper.LogMessage("log_install.txt", "Servicio de monitoreo instalado correctamente");
 
-                    // Iniciar el servicio inmediatamente
-                    Process.Start(Application.ExecutablePath, "/backgroundmonitor");
+                    // Iniciar el servicio inmediatamente si se solicita
+                    if (autoStart)
+                    {
+                        // Evitar ventanas CMD usando UseShellExecute=true y WindowStyle=Hidden
+                        ProcessStartInfo startInfo = new ProcessStartInfo
+                        {
+                            FileName = Application.ExecutablePath,
+                            Arguments = "/backgroundmonitor /silent",
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Hidden
+                        };
+                        Process.Start(startInfo);
+                    }
                 }
 
                 return success;
