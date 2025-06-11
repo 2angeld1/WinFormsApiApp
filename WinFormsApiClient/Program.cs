@@ -1,14 +1,15 @@
 ﻿using System;
-using System.Windows.Forms;
-using System.IO;
-using WinFormsApiClient.VirtualPrinter;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
-using WinFormsApiClient.VirtualWatcher;
 using System.Management;
-using System.Threading;
 using System.Runtime.InteropServices; // Añadir esta línea
 using System.Text; // Para Encoding
+using System.Threading;
+using System.Threading.Tasks; // Agregar esta línea para Task
+using System.Windows.Forms;
+using WinFormsApiClient.VirtualPrinter;
+using WinFormsApiClient.VirtualWatcher;
 namespace WinFormsApiClient
 {
     static class Program
@@ -83,7 +84,7 @@ namespace WinFormsApiClient
             ConfigureApplicationRecovery();
             // Configurar inicio automático con Windows
             EnsureBackgroundMonitorStartsWithWindows();
-
+            
             // Procesar los argumentos
             if (isBackgroundMonitor)
             {
@@ -322,7 +323,7 @@ namespace WinFormsApiClient
         /// <summary>
         /// Obtiene la línea de comandos de un proceso
         /// </summary>
-        private static string GetProcessCommandLine(int processId)
+        public static string GetProcessCommandLine(int processId)
         {
             try
             {
@@ -341,9 +342,6 @@ namespace WinFormsApiClient
                 return string.Empty;
             }
         }
-        /// <summary>
-        /// Configura que el monitor se inicie automáticamente al iniciar Windows
-        /// </summary>
         private static void EnsureBackgroundMonitorStartsWithWindows()
         {
             try
@@ -351,48 +349,67 @@ namespace WinFormsApiClient
                 string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "autostart_setup.log");
                 File.AppendAllText(logPath, $"[{DateTime.Now}] Configurando inicio automático con Windows\r\n");
 
-                // 1. Verificar si ya está configurado mediante registro
-                if (!BackgroundMonitorService.IsInstalledForAutostart())
-                {
-                    File.AppendAllText(logPath, $"[{DateTime.Now}] No existe configuración de inicio automático, instalando...\r\n");
+                // IMPORTANTE: USAR SOLO UN MÉTODO DE AUTOARRANQUE
+                // Configurar inicio mediante tarea programada (más confiable) y no usar registro
+                bool taskResult = CreateStartupTask();
+                File.AppendAllText(logPath, $"[{DateTime.Now}] Resultado configuración por tarea programada: {taskResult}\r\n");
 
-                    // Configurar inicio mediante el registro de Windows
-                    bool registryResult = BackgroundMonitorService.InstallAutostart();
-                    File.AppendAllText(logPath, $"[{DateTime.Now}] Resultado configuración por registro: {registryResult}\r\n");
-
-                    // Configurar inicio mediante tarea programada (más confiable)
-                    bool taskResult = CreateStartupTask();
-                    File.AppendAllText(logPath, $"[{DateTime.Now}] Resultado configuración por tarea programada: {taskResult}\r\n");
-                }
-                else
-                {
-                    File.AppendAllText(logPath, $"[{DateTime.Now}] Inicio automático ya está configurado\r\n");
-
-                    // Verificar que la tarea programada también esté configurada
-                    CreateStartupTask();
-                }
+                // No usar BackgroundMonitorService.InstallAutostart() - para evitar duplicación
             }
             catch (Exception ex)
             {
-                // Registrar error pero no interrumpir la ejecución principal
-                try
-                {
-                    string errorPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "autostart_error.log");
-                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al configurar inicio automático: {ex.Message}\r\n{ex.StackTrace}\r\n");
-                }
-                catch { /* Si no podemos ni siquiera registrar el error, no hay mucho que hacer */ }
+                // Registrar error
             }
         }
 
-        /// <summary>
-        /// Crea una tarea programada para iniciar el monitor al arrancar Windows
-        /// </summary>
+        // Modificar el método CreateStartupTask para usar opciones de ejecución invisibles
         private static bool CreateStartupTask()
         {
             try
             {
                 string appPath = Application.ExecutablePath;
                 string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "startup_task.log");
+
+                // SOLUCIÓN: Verificar si ya existe la tarea programada
+                string checkExistingScript = @"
+try {
+    $taskName = 'ECMCentralMonitor'
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task -ne $null) {
+        # Verificar la acción y los parámetros para determinar si es necesario actualizar
+        $action = $task.Actions[0]
+        $arguments = $action.Arguments
+        
+        # Verificar si los argumentos ya incluyen /silent
+        if ($arguments -match '/backgroundmonitor /silent') {
+            Write-Output 'La tarea programada ya existe con los parámetros correctos'
+            return $true
+        }
+        else {
+            # Devuelve que la tarea existe pero debe actualizarse
+            Write-Output 'La tarea programada existe pero necesita actualización'
+            return $true
+        }
+    }
+    else {
+        # La tarea no existe
+        Write-Output 'La tarea programada no existe'
+        return $false
+    }
+}
+catch {
+    Write-Output ('Error al verificar tarea programada: ' + $_.Exception.Message)
+    return $false
+}";
+
+                string existingTaskResult = PowerShellHelper.RunPowerShellCommandWithOutput(checkExistingScript);
+                File.AppendAllText(logPath, $"[{DateTime.Now}] Verificación de tarea existente: {existingTaskResult}\r\n");
+
+                // Si la tarea ya está configurada correctamente, no hacer nada
+                if (existingTaskResult.Contains("La tarea programada ya existe con los parámetros correctos"))
+                {
+                    return true;
+                }
 
                 // Script PowerShell para crear/actualizar la tarea programada
                 string psScript = $@"
@@ -401,25 +418,21 @@ try {{
     $exe = '{appPath.Replace("\\", "\\\\")}'
     $action = New-ScheduledTaskAction -Execute $exe -Argument '/backgroundmonitor /silent'
     
-    # Definir varios disparadores para mayor confiabilidad
-    $triggers = @(
-        # Al inicio de sesión (más común)
-        (New-ScheduledTaskTrigger -AtLogon),
-        # Al inicio del sistema (como respaldo)
-        (New-ScheduledTaskTrigger -AtStartup)
-    )
+    # Definir UN SOLO disparador para evitar duplicidad
+    # Al inicio de sesión (más común y fiable)
+    $trigger = New-ScheduledTaskTrigger -AtLogon
     
-    # Configuración optimizada
+    # Configuración optimizada - añadir opción Hidden
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden
-    
-    # Usar el nivel más alto de privilegios disponible
-    $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Highest
+
+    # IMPORTANTE: Usar RunLevel Normal para evitar prompts UAC
+    $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Normal
     
     # Si ya existe la tarea, eliminarla primero
     Unregister-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue -Confirm:$false
     
     # Crear la tarea
-    $task = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $triggers -Settings $settings -Principal $principal
+    $task = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
     Write-Output ""Tarea programada creada: $($task.TaskName)""
     
     return $true
@@ -771,11 +784,6 @@ if ($task -eq $null) {{
                 // Crear inmediatamente el archivo de marcador
                 string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
                 File.WriteAllText(markerFilePath, Process.GetCurrentProcess().Id.ToString());
-
-                // Registrar eliminación del archivo al cerrar
-                AppDomain.CurrentDomain.ProcessExit += (s, e) => {
-                    try { if (File.Exists(markerFilePath)) File.Delete(markerFilePath); } catch { }
-                };
 
                 // Registrar eliminación del archivo al cerrar
                 AppDomain.CurrentDomain.ProcessExit += (s, e) => {

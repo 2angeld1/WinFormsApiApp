@@ -1346,8 +1346,8 @@ namespace WinFormsApiClient
             try
             {
                 Console.WriteLine("Llamando a ECMVirtualPrinter.ScanAndUploadAsync()");
-                // Usar la función mejorada con verificación de licencia e instalación automática
-                //await ECMVirtualPrinter.ScanAndUploadAsync();
+                // Usar la función de escaneo con verificación de licencia e instalación automática
+                await ECMVirtualPrinter.ScanAndUploadAsync();
                 Console.WriteLine("=== BtnScanToPortal_Click completado ===");
             }
             catch (Exception ex)
@@ -1366,7 +1366,6 @@ namespace WinFormsApiClient
                 MessageBox.Show($"Error al escanear y subir documento: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
-
         private async void BtnPrintToPortal_Click(object sender, EventArgs e)
         {
             Console.WriteLine("=== BtnPrintToPortal_Click iniciado ===");

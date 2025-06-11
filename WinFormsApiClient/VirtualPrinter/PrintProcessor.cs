@@ -1,12 +1,13 @@
-﻿using System;
+﻿using Newtonsoft.Json;
+using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using System.Windows.Forms;
-using Newtonsoft.Json;
 using WinFormsApiClient.VirtualPrinter;
 using WinFormsApiClient.VirtualWatcher;
 
@@ -474,10 +475,11 @@ namespace WinFormsApiClient.VirtualPrinter
         {
             try
             {
-                // Verificar si ya está en ejecución mediante el servicio
-                if (WinFormsApiClient.VirtualWatcher.BackgroundMonitorService._isRunning)
+                // Verificar si ya está en ejecución mediante el servicio o a través de la verificación reforzada
+                if (WinFormsApiClient.VirtualWatcher.BackgroundMonitorService._isRunning ||
+                    WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.IsActuallyRunning())
                 {
-                    Console.WriteLine("Monitor ya en ejecución según BackgroundMonitorService");
+                    Console.WriteLine("Monitor ya en ejecución según verificación");
                     return true;
                 }
 
@@ -515,41 +517,75 @@ namespace WinFormsApiClient.VirtualPrinter
                     }
                 }
 
+                // Verificar si hay alguna instancia de la aplicación que ya esté ejecutando el módulo de UI
+                bool appRunning = false;
+                Process currentProcess = Process.GetCurrentProcess();
+                var processes = Process.GetProcessesByName(currentProcess.ProcessName);
+
+                foreach (var proc in processes)
+                {
+                    try
+                    {
+                        if (proc.Id != currentProcess.Id) // No contar este proceso
+                        {
+                            // Si hay otro proceso de la aplicación que no sea este y no sea un monitor,
+                            // iniciar el monitor silenciosamente para que se comparta con esa instancia
+                            string cmdLine = GetCommandLine(proc.Id);
+                            if (!cmdLine.Contains("/backgroundmonitor") && !string.IsNullOrEmpty(cmdLine))
+                            {
+                                appRunning = true;
+                                break;
+                            }
+                        }
+                    }
+                    catch { /* Ignorar errores */ }
+                }
+
+                // Iniciar el monitor de manera más silenciosa si ya hay una aplicación activa
                 if (!markerExists)
                 {
                     Console.WriteLine("Iniciando monitor en segundo plano explícitamente");
 
-                    // Iniciar el monitor en segundo plano mediante proceso separado
-                    ProcessStartInfo startInfo = new ProcessStartInfo
+                    if (appRunning)
                     {
-                        FileName = Application.ExecutablePath,
-                        Arguments = "/backgroundmonitor",
-                        UseShellExecute = true, // Importante: true para mostrar la ventana/icono
-                        CreateNoWindow = false  // Importante: false para que se cree la ventana
-                    };
-
-                    Process monitorProcess = Process.Start(startInfo);
-
-                    // Esperar a que el monitor esté activo (verificar el archivo de marcador)
-                    int maxWaitSeconds = 10; // Máximo tiempo de espera en segundos
-                    bool monitorActive = false;
-
-                    for (int i = 0; i < maxWaitSeconds; i++)
+                        // Usar la clase ApplicationLauncher para iniciar el monitor silenciosamente
+                        return WinFormsApiClient.VirtualWatcher.ApplicationLauncher.StartBackgroundMonitorSilently();
+                    }
+                    else
                     {
-                        await Task.Delay(1000); // Esperar 1 segundo
-
-                        // Verificar si el archivo de marcador ya existe (el monitor está activo)
-                        if (File.Exists(markerFilePath))
+                        // Iniciar el monitor en segundo plano mediante proceso separado
+                        ProcessStartInfo startInfo = new ProcessStartInfo
                         {
-                            monitorActive = true;
-                            Console.WriteLine("Monitor iniciado exitosamente");
-                            break;
+                            FileName = Application.ExecutablePath,
+                            Arguments = "/backgroundmonitor /silent", // Usar modo silencioso siempre
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Minimized,
+                            CreateNoWindow = true
+                        };
+
+                        Process monitorProcess = Process.Start(startInfo);
+
+                        // Esperar a que el monitor esté activo (verificar el archivo de marcador)
+                        int maxWaitSeconds = 10; // Máximo tiempo de espera en segundos
+                        bool monitorActive = false;
+
+                        for (int i = 0; i < maxWaitSeconds; i++)
+                        {
+                            await Task.Delay(1000); // Esperar 1 segundo
+
+                            // Verificar si el archivo de marcador ya existe (el monitor está activo)
+                            if (File.Exists(markerFilePath))
+                            {
+                                monitorActive = true;
+                                Console.WriteLine("Monitor iniciado exitosamente");
+                                break;
+                            }
+
+                            Console.WriteLine($"Esperando al monitor... ({i + 1}/{maxWaitSeconds})");
                         }
 
-                        Console.WriteLine($"Esperando al monitor... ({i + 1}/{maxWaitSeconds})");
+                        return monitorActive;
                     }
-
-                    return monitorActive;
                 }
 
                 return true;
@@ -558,6 +594,27 @@ namespace WinFormsApiClient.VirtualPrinter
             {
                 Console.WriteLine($"Error al verificar/iniciar monitor de fondo: {ex.Message}");
                 return false;
+            }
+        }
+
+        // Método auxiliar para obtener la línea de comandos de un proceso
+        private static string GetCommandLine(int processId)
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {processId}"))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        return obj["CommandLine"]?.ToString() ?? string.Empty;
+                    }
+                }
+                return string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
             }
         }
 

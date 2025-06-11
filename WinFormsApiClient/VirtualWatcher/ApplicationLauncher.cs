@@ -19,9 +19,9 @@ namespace WinFormsApiClient.VirtualWatcher
             try
             {
                 // Verificar si ya está en ejecución
-                if (BackgroundMonitorService._isRunning)
+                if (BackgroundMonitorService.IsActuallyRunning())
                 {
-                    WatcherLogger.LogActivity("Monitor de fondo ya activo");
+                    WatcherLogger.LogActivity("Monitor de fondo ya activo (verificación reforzada)");
                     return true;
                 }
 

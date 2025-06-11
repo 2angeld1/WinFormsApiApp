@@ -444,6 +444,11 @@ namespace WinFormsApiClient.VirtualPrinter
                     // Iniciar el servicio inmediatamente si se solicita
                     if (autoStart)
                     {
+                        if (WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.IsActuallyRunning())
+                        {
+                            LogHelper.LogMessage("log_install.txt", "Ya existe un monitor de fondo activo. No se lanzará otro.");
+                            return true;
+                        }
                         // Evitar ventanas CMD usando UseShellExecute=true y WindowStyle=Hidden
                         ProcessStartInfo startInfo = new ProcessStartInfo
                         {

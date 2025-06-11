@@ -1697,7 +1697,7 @@ catch {{
                 Console.WriteLine($"Error al crear marcador de archivo pendiente: {ex.Message}");
             }
         }
-        private static void ScheduleFileCheck(string filePath)
+        public static void ScheduleFileCheck(string filePath)
         {
             // Detener timer anterior si existe
             if (_pendingFiles.ContainsKey(filePath) && _pendingFiles[filePath] != null)
@@ -1757,7 +1757,7 @@ catch {{
         /// <summary>
         /// Lanza la aplicación ECM Central para procesar un archivo específico
         /// </summary>
-        private static void LaunchApplicationWithFile(string filePath)
+        public static void LaunchApplicationWithFile(string filePath)
         {
             try
             {

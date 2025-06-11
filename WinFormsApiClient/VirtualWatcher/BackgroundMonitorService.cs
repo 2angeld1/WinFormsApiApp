@@ -29,17 +29,32 @@ namespace WinFormsApiClient.VirtualWatcher
         {
             try
             {
-                // Registrar diagnóstico
+                // Ubicación única para registro de diagnóstico
                 string diagPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "monitor_start_diag.log");
-                File.AppendAllText(diagPath, $"[{DateTime.Now}] Intentando iniciar BackgroundMonitorService\r\n");
+                File.AppendAllText(diagPath, $"[{DateTime.Now}] Inicio de método Start() en BackgroundMonitorService\r\n");
 
-                // Limpiar marcadores antiguos
-                CleanupOldMarkers();
+                // PASO 1: Verificar si ya hay una instancia activa mediante varios métodos
+                // ---------------------------------------------------------------------
 
-                // Verificar si ya existe un monitor activo
-                bool monitorRunning = false;
+                // 1.1 - Verificar flag local
+                if (_isRunning)
+                {
+                    File.AppendAllText(diagPath, $"[{DateTime.Now}] Flag local _isRunning = true, saliendo\r\n");
+                    return true; // Ya estamos ejecutando en este mismo proceso
+                }
+
+                // 1.2 - Verificar con método robusto de comprobación
+                if (IsActuallyRunning())
+                {
+                    File.AppendAllText(diagPath, $"[{DateTime.Now}] IsActuallyRunning() detectó instancia activa, saliendo\r\n");
+                    _isRunning = true; // Actualizar flag local para coherencia
+                    return true;
+                }
+
+                // 1.3 - Verificación directa por procesos con argumento específico
                 int runningMonitorPid = -1;
                 var processes = Process.GetProcessesByName("WinFormsApiClient");
+
                 foreach (var proc in processes)
                 {
                     try
@@ -50,100 +65,106 @@ namespace WinFormsApiClient.VirtualWatcher
                             string cmdLine = GetCommandLine(proc.Id);
                             if (cmdLine.Contains("/backgroundmonitor"))
                             {
-                                monitorRunning = true;
                                 runningMonitorPid = proc.Id;
-                                break;
+                                File.AppendAllText(diagPath, $"[{DateTime.Now}] Encontrado proceso activo con PID {runningMonitorPid}, saliendo\r\n");
+                                _isRunning = true; // Actualizar flag por coherencia
+                                return true;
                             }
                         }
                     }
-                    catch { /* Ignorar errores */ }
+                    catch { /* Ignorar errores individuales */ }
                 }
 
-                // Si ya existe un monitor, no iniciar otro
-                if (monitorRunning)
-                {
-                    File.AppendAllText(diagPath, $"[{DateTime.Now}] Ya existe un monitor activo (PID: {runningMonitorPid}), no iniciando nuevo monitor\r\n");
-                    _isRunning = true; // Marcar como activo para evitar más inicios
-                    return true;
-                }
+                // PASO 2: Limpiar estado anterior y crear marcadores nuevos
+                // ---------------------------------------------------------------------
 
-                // Crear marcador con nuevo PID
+                File.AppendAllText(diagPath, $"[{DateTime.Now}] No se detectaron instancias activas, procediendo con inicialización\r\n");
+
+                // 2.1 - Limpiar marcadores obsoletos
+                CleanupOldMarkers();
+
+                // 2.2 - Crear marcador de ejecución actualizado (solo PID, sin información adicional)
                 string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
                 File.WriteAllText(markerFilePath, Process.GetCurrentProcess().Id.ToString());
-                File.AppendAllText(diagPath, $"[{DateTime.Now}] Archivo marcador creado/actualizado\r\n");
+                File.AppendAllText(diagPath, $"[{DateTime.Now}] Creado marcador en {markerFilePath} con PID {Process.GetCurrentProcess().Id}\r\n");
 
-                // Si ya está en ejecución, salir
-                if (_isRunning)
-                {
-                    File.AppendAllText(diagPath, $"[{DateTime.Now}] El servicio ya está en ejecución, saliendo\r\n");
-                    WatcherLogger.LogActivity("El servicio ya está en ejecución");
-                    return true;
-                }
-
-                // Configurar eliminación del marcador al cerrar
+                // 2.3 - Configurar eliminación automática del marcador al salir
                 AppDomain.CurrentDomain.ProcessExit += (s, e) => {
-                    try { if (File.Exists(markerFilePath)) File.Delete(markerFilePath); } catch { }
+                    try
+                    {
+                        if (File.Exists(markerFilePath))
+                            File.Delete(markerFilePath);
+                    }
+                    catch { /* Ignorar errores al eliminar */ }
                 };
+
+                // PASO 3: Inicializar componentes del sistema
+                // ---------------------------------------------------------------------
 
                 WatcherLogger.LogActivity("Iniciando servicio de monitoreo en segundo plano");
 
-                // Verificar si la impresora está instalada
+                // 3.1 - Verificar estado de la impresora
                 if (!ECMVirtualPrinter.IsPrinterInstalled())
                 {
-                    WatcherLogger.LogActivity("La impresora ECM Central no está instalada. Intentando instalar...");
+                    WatcherLogger.LogActivity("Impresora no instalada, intentando instalar...");
+                    File.AppendAllText(diagPath, $"[{DateTime.Now}] Impresora no instalada, iniciando instalación\r\n");
                     Task.Run(async () => await PrinterInstaller.InstallPrinterAsync(true)).Wait();
                 }
-                else
-                {
-                    WatcherLogger.LogActivity("La impresora ECM Central ya está instalada, continuando ejecución");
-                }
 
-                // Verificar carpeta de salida y configurar Bullzip
-                EnsureOutputAndAutomation();
+                // 3.2 - Configuración de carpetas y automatización
+                EnsureOutputAndAutomation(); // Esta función NO debe crear MoverPDFs.bat automáticamente
 
-                // Iniciar solo el monitor de archivos (FileMonitor) - es el único realmente necesario
+                // PASO 4: Iniciar servicios y monitores
+                // ---------------------------------------------------------------------
+
+                // 4.1 - Iniciar solo FileMonitor (es el componente esencial)
                 WatcherLogger.LogActivity("Iniciando monitor de archivos PDF");
                 FileMonitor.Instance.StartMonitoring();
 
-                // Realizar primera verificación manual de PDFs existentes
-                WatcherLogger.LogActivity("Ejecutando verificación inicial de PDFs existentes");
+                // 4.2 - Verificación inicial única de PDFs existentes
+                WatcherLogger.LogActivity("Ejecutando verificación inicial de archivos existentes");
                 FileMonitor.Instance.CheckForNewPDFs();
 
-                // Configurar timer de heartbeat (reducido a una verificación cada 60 segundos)
+                // 4.3 - Configurar heartbeat reducido (cada 60 segundos en vez de 30)
                 _heartbeatTimer = new System.Threading.Timer(SendHeartbeat, null, 0, 60000);
+
+                // PASO 5: Finalizar inicialización y marcar como activo
+                // ---------------------------------------------------------------------
 
                 _isRunning = true;
                 WatcherLogger.LogActivity("Servicio de monitoreo iniciado correctamente");
-                WatcherLogger.LogSystemDiagnostic();
 
-                // Notificar mediante archivo que el servicio está activo
+                // 5.1 - Crear marcador de servicio activo (registro adicional)
                 try
                 {
                     string readyMarkerPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "monitor_active.marker");
                     File.WriteAllText(readyMarkerPath, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+                    File.AppendAllText(diagPath, $"[{DateTime.Now}] Inicialización completada con éxito\r\n");
                 }
                 catch (Exception ex)
                 {
                     File.AppendAllText(diagPath, $"[{DateTime.Now}] Error al crear marcador de servicio activo: {ex.Message}\r\n");
                 }
 
+                // Registrar diagnóstico completo del sistema
+                WatcherLogger.LogSystemDiagnostic();
+
                 return true;
             }
             catch (Exception ex)
             {
-                // Registrar error
+                // Registrar error en archivo de diagnóstico independiente
                 try
                 {
                     string errorPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "monitor_error.log");
                     File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al iniciar monitor: {ex.Message}\r\n{ex.StackTrace}\r\n");
                 }
-                catch { }
+                catch { /* Si falla el registro, no podemos hacer más */ }
 
-                WatcherLogger.LogError("Error al iniciar servicio de monitoreo", ex);
+                WatcherLogger.LogError("Error crítico al iniciar servicio de monitoreo", ex);
                 return false;
             }
         }
-        // Añadir este método para reforzar la detección de nuevos archivos
         private static void CheckForNewPdfFiles()
         {
             try
@@ -499,26 +520,12 @@ Si tiene problemas, contacte al soporte técnico.
                 string exePath = Application.ExecutablePath;
                 string args = "/backgroundmonitor /silent";
 
-                // 1. Método de registro (el original)
+                // Ya no utilizamos el método de registro para evitar duplicidad
+                // Solo registramos que se intentó pero fue omitido deliberadamente
+                WatcherLogger.LogActivity("Omitiendo instalación por registro (desactivado para evitar duplicaciones)");
                 bool registrySuccess = false;
-                try
-                {
-                    using (RegistryKey key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true))
-                    {
-                        if (key != null)
-                        {
-                            key.SetValue(_startupKey, $"\"{exePath}\" {args}");
-                            registrySuccess = true;
-                            WatcherLogger.LogActivity("Servicio instalado correctamente en registro de inicio");
-                        }
-                    }
-                }
-                catch (Exception regEx)
-                {
-                    WatcherLogger.LogError("Error al instalar en registro de inicio", regEx);
-                }
 
-                // 2. Método alternativo: crear un acceso directo en la carpeta de inicio
+                // Utilizamos solo el método alternativo: crear un acceso directo en la carpeta de inicio
                 bool shortcutSuccess = false;
                 try
                 {
@@ -549,8 +556,13 @@ Write-Output 'Acceso directo creado correctamente'";
                     WatcherLogger.LogError("Error al crear acceso directo", shortcutEx);
                 }
 
-                // Si al menos uno de los métodos tuvo éxito, consideramos éxito
-                _isInstalled = registrySuccess || shortcutSuccess;
+                // Solo el método de acceso directo determina si hubo éxito
+                _isInstalled = shortcutSuccess;
+
+                // Registrar que ahora solo usamos la tarea programada como mecanismo de inicio
+                string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "autostart_setup.log");
+                File.AppendAllText(logPath, $"[{DateTime.Now}] Instalación por registro desactivada para evitar duplicaciones. Solo se usa tarea programada.\r\n");
+
                 return _isInstalled;
             }
             catch (Exception ex)
@@ -569,6 +581,31 @@ Write-Output 'Acceso directo creado correctamente'";
             {
                 WatcherLogger.LogActivity("Desinstalando servicio de autoarranque");
 
+                // Limpiar archivos temporales que pueden causar errores de script
+                try
+                {
+                    string tempPath = Path.GetTempPath();
+                    foreach (string file in Directory.GetFiles(tempPath, "invisible_launcher_*.vbs"))
+                    {
+                        try
+                        {
+                            File.Delete(file);
+                            WatcherLogger.LogActivity($"Eliminado archivo temporal: {file}");
+                        }
+                        catch (Exception ex)
+                        {
+                            WatcherLogger.LogError($"No se pudo eliminar archivo temporal: {file}", ex);
+                        }
+                    }
+                }
+                catch (Exception cleanEx)
+                {
+                    WatcherLogger.LogError("Error al limpiar archivos temporales", cleanEx);
+                    // Continuar con la desinstalación aunque falle la limpieza
+                }
+
+                // Eliminar la entrada del registro si existe
+                bool registryRemoved = false;
                 using (RegistryKey key = Registry.CurrentUser.OpenSubKey("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run", true))
                 {
                     if (key != null)
@@ -576,14 +613,61 @@ Write-Output 'Acceso directo creado correctamente'";
                         if (key.GetValue(_startupKey) != null)
                         {
                             key.DeleteValue(_startupKey);
-                            _isInstalled = false;
-                            WatcherLogger.LogActivity("Servicio desinstalado correctamente del autoarranque");
-                            return true;
+                            registryRemoved = true;
+                            WatcherLogger.LogActivity("Entrada de registro eliminada correctamente");
                         }
                     }
                 }
 
-                return false;
+                // Eliminar el acceso directo de la carpeta de inicio si existe
+                bool shortcutRemoved = false;
+                try
+                {
+                    string startupFolder = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.Startup),
+                        "ECM Monitor.lnk");
+
+                    if (File.Exists(startupFolder))
+                    {
+                        File.Delete(startupFolder);
+                        shortcutRemoved = true;
+                        WatcherLogger.LogActivity("Acceso directo eliminado correctamente");
+                    }
+                }
+                catch (Exception shortcutEx)
+                {
+                    WatcherLogger.LogError("Error al eliminar acceso directo", shortcutEx);
+                }
+
+                // Eliminar tarea programada
+                try
+                {
+                    string psCommand = @"
+try {
+    $taskName = 'ECMCentralMonitor'
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+    Write-Output 'Tarea programada eliminada correctamente'
+    return $true
+} catch {
+    Write-Output ""Error al eliminar tarea programada: $($_.Exception.Message)""
+    return $false
+}";
+
+                    string result = PowerShellHelper.RunPowerShellCommandWithOutput(psCommand);
+                    bool taskRemoved = result.Contains("correctamente");
+
+                    if (taskRemoved)
+                        WatcherLogger.LogActivity("Tarea programada eliminada correctamente");
+                }
+                catch (Exception taskEx)
+                {
+                    WatcherLogger.LogError("Error al eliminar tarea programada", taskEx);
+                }
+
+                _isInstalled = false;
+                WatcherLogger.LogActivity("Servicio desinstalado correctamente del autoarranque");
+
+                return true;
             }
             catch (Exception ex)
             {

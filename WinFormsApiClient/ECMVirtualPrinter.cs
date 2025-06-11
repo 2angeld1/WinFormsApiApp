@@ -100,24 +100,89 @@ namespace WinFormsApiClient
         {
             try
             {
-                // Iniciar el monitor en segundo plano obligatoriamente antes de imprimir
-                bool monitorStarted = await StartBackgroundMonitorAsync();
+                // Verificar si hay una instancia de la aplicación principal ya en ejecución
+                // excluyendo la instancia actual y los procesos del monitor
+                bool mainAppRunning = false;
+                Form activeForm = null;
 
-                if (!monitorStarted)
+                // Primero comprobar si estamos en la aplicación principal comprobando los formularios abiertos
+                foreach (Form form in Application.OpenForms)
                 {
-                    MessageBox.Show(
-                        "No se pudo iniciar el monitor en segundo plano necesario para la impresión.\n" +
-                        "Por favor, inténtelo nuevamente o ejecute la aplicación con el parámetro /backgroundmonitor.",
-                        "Error de inicialización",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    return;
+                    if (form.GetType().Name == "FormularioForm" || form.GetType().Name == "LoginForm")
+                    {
+                        mainAppRunning = true;
+                        activeForm = form;
+                        break;
+                    }
                 }
 
-                // Esperar un momento para que el monitor se inicialice completamente
-                await Task.Delay(1000);
+                // Si estamos en la aplicación principal o tenemos un archivo para imprimir
+                if (mainAppRunning || !string.IsNullOrEmpty(filePath))
+                {
+                    // Iniciar el monitor en segundo plano obligatoriamente antes de imprimir
+                    bool monitorStarted = await StartBackgroundMonitorAsync();
 
-                // Continuar con el proceso normal de impresión
-                await PrintProcessor.PrintDocumentAsync(filePath);
+                    if (!monitorStarted)
+                    {
+                        MessageBox.Show(
+                            "No se pudo iniciar el monitor en segundo plano necesario para la impresión.\n" +
+                            "Por favor, inténtelo nuevamente o ejecute la aplicación con el parámetro /backgroundmonitor.",
+                            "Error de inicialización",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+
+                    // Esperar un momento para que el monitor se inicialice completamente
+                    await Task.Delay(1000);
+
+                    // Si estamos en la aplicación principal, continuar con el proceso normal
+                    if (mainAppRunning)
+                    {
+                        await PrintProcessor.PrintDocumentAsync(filePath);
+                        return;
+                    }
+
+                    // Si no estamos en la aplicación principal, verificar si hay otra instancia activa
+                    Process currentProcess = Process.GetCurrentProcess();
+                    var processes = Process.GetProcessesByName(currentProcess.ProcessName);
+
+                    foreach (var proc in processes)
+                    {
+                        try
+                        {
+                            if (proc.Id != currentProcess.Id) // No contar este proceso
+                            {
+                                string cmdLine = Program.GetProcessCommandLine(proc.Id);
+                                // Si hay un proceso que no sea un monitor de fondo, es probablemente la UI principal
+                                if (!cmdLine.Contains("/backgroundmonitor") && !string.IsNullOrEmpty(cmdLine))
+                                {
+                                    // Encontramos una instancia de la app principal, enviar el archivo a procesar
+                                    Console.WriteLine("Se encontró una instancia de la aplicación principal activa");
+
+                                    // Crear un archivo marcador para que la aplicación lo detecte
+                                    string pendingFile = Path.Combine(
+                                        VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
+                                        "pending_file.marker");
+
+                                    File.WriteAllText(pendingFile, filePath);
+
+                                    // Asegurarse que la aplicación está activa/visible
+                                    VirtualWatcher.ApplicationLauncher.LaunchApplicationWithFile(filePath);
+                                    return;
+                                }
+                            }
+                        }
+                        catch { /* Ignorar errores */ }
+                    }
+
+                    // Si no hay una instancia activa, iniciar una nueva con el archivo
+                    await PrintProcessor.PrintDocumentAsync(filePath);
+                }
+                else
+                {
+                    // Continuar con el proceso normal de impresión
+                    await PrintProcessor.PrintDocumentAsync(filePath);
+                }
             }
             catch (Exception ex)
             {
@@ -131,83 +196,22 @@ namespace WinFormsApiClient
         /// <summary>
         /// Inicia el monitor en segundo plano y espera a que esté activo
         /// </summary>
-        private static async Task<bool> StartBackgroundMonitorAsync()
+        public static async Task<bool> StartBackgroundMonitorAsync()
         {
             try
             {
                 Console.WriteLine("Verificando si el monitor en segundo plano está activo...");
 
-                // Verificar si ya está en ejecución
-                if (VirtualWatcher.BackgroundMonitorService._isRunning)
+                // Verificación reforzada usando el método IsActuallyRunning
+                if (BackgroundMonitorService.IsActuallyRunning())
                 {
-                    Console.WriteLine("El monitor ya está en ejecución según BackgroundMonitorService");
+                    Console.WriteLine("El monitor ya está activo (verificación reforzada)");
                     return true;
                 }
 
-                // Verificar archivo de marcador
-                string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
-
-                if (File.Exists(markerFilePath))
-                {
-                    try
-                    {
-                        string pidContent = File.ReadAllText(markerFilePath);
-                        if (int.TryParse(pidContent, out int pid))
-                        {
-                            try
-                            {
-                                Process process = Process.GetProcessById(pid);
-                                if (!process.HasExited)
-                                {
-                                    Console.WriteLine($"Monitor encontrado con PID: {pid}");
-                                    return true;
-                                }
-                            }
-                            catch
-                            {
-                                // El proceso ya no existe
-                                Console.WriteLine("Archivo de marcador existe pero el proceso no está activo");
-                                try { File.Delete(markerFilePath); } catch { }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error al leer archivo de marcador: {ex.Message}");
-                    }
-                }
-
-                // El monitor no está activo, iniciarlo
-                Console.WriteLine("Iniciando monitor en segundo plano...");
-
-                ProcessStartInfo startInfo = new ProcessStartInfo
-                {
-                    FileName = Application.ExecutablePath,
-                    Arguments = "/backgroundmonitor",
-                    UseShellExecute = true,
-                    CreateNoWindow = false
-                };
-
-                Process proc = Process.Start(startInfo);
-
-                // Esperar a que el monitor esté activo (verificar archivo de marcador)
-                int maxAttempts = 10;
-                for (int i = 0; i < maxAttempts; i++)
-                {
-                    await Task.Delay(500);
-
-                    if (File.Exists(markerFilePath))
-                    {
-                        Console.WriteLine("Monitor iniciado correctamente");
-                        return true;
-                    }
-
-                    Console.WriteLine($"Esperando a que el monitor se inicie... {i + 1}/{maxAttempts}");
-                }
-
-                // Si llegamos aquí, el monitor no se inició correctamente
-                Console.WriteLine("No se pudo confirmar que el monitor se haya iniciado correctamente");
-                return false;
+                // El monitor no está activo, iniciar usando el método StartBackgroundMonitorSilently
+                // que ya tiene toda la lógica de verificación e inicio
+                return VirtualWatcher.ApplicationLauncher.StartBackgroundMonitorSilently();
             }
             catch (Exception ex)
             {
@@ -215,6 +219,11 @@ namespace WinFormsApiClient
                 return false;
             }
         }
+        /// <summary>
+        /// Escanea un documento y lo sube al portal
+        /// </summary>
+        public static Task<bool> ScanAndUploadAsync() =>
+            WinFormsApiClient.Scanner.ScannerService.ScanAndUploadAsync();
 
         /// <summary>
         /// Sube un archivo al portal

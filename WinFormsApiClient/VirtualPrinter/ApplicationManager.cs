@@ -1,8 +1,11 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
+using WinFormsApiClient.VirtualWatcher;
 
 namespace WinFormsApiClient.VirtualPrinter
 {
@@ -169,53 +172,170 @@ namespace WinFormsApiClient.VirtualPrinter
         }
 
         /// <summary>
-        /// Lanza la aplicación principal con un archivo específico
+        /// Lanza la aplicación ECM Central con un archivo específico
         /// </summary>
-        public static bool LaunchApplicationWithFile(string filePath)
+        public static void LaunchApplicationWithFile(string filePath)
         {
-            Console.WriteLine($"LaunchApplicationWithFile iniciado con archivo: {filePath}");
             try
             {
-                // Obtener la ruta actual de la aplicación
-                string appPath = System.Reflection.Assembly.GetEntryAssembly().Location;
-
-                // Verificar que el archivo existe
-                if (!File.Exists(filePath))
+                // Verificar si ya está abierto algún formulario relevante
+                foreach (Form form in Application.OpenForms)
                 {
-                    Console.WriteLine($"ERROR: No se encontró el archivo: {filePath}");
-                    return false;
+                    if (form.GetType().Name == "FormularioForm" || form.GetType().Name == "LoginForm")
+                    {
+                        // La aplicación ya está abierta, marcar el archivo para procesamiento
+                        string markerFile = Path.Combine(
+                            VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
+                            "pending_file.marker");
+
+                        File.WriteAllText(markerFile, filePath);
+
+                        // Activar la ventana existente
+                        try
+                        {
+                            form.Invoke(new Action(() => {
+                                form.WindowState = FormWindowState.Normal;
+                                form.Activate();
+
+                                // Notificar al usuario que hay un nuevo archivo para procesar
+                                MessageBox.Show(
+                                    $"Se ha detectado un nuevo archivo para procesar:\n{Path.GetFileName(filePath)}",
+                                    "Nuevo archivo PDF",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information);
+
+                                // Si es el formulario principal, llamar al método que procesa archivos si existe
+                                if (form.GetType().Name == "FormularioForm")
+                                {
+                                    var method = form.GetType().GetMethod("ProcessPendingFile", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                                    method?.Invoke(form, new object[] { filePath });
+                                }
+                            }));
+                        }
+                        catch (Exception ex)
+                        {
+                            WatcherLogger.LogError("Error al activar ventana existente", ex);
+                        }
+
+                        WatcherLogger.LogActivity($"Aplicación ya abierta, marcando archivo para procesamiento: {filePath}");
+                        return;
+                    }
                 }
 
-                // Asegurarse de que la ruta no tenga espacios sin comillas
-                string safeFilePath = filePath;
-                if (filePath.Contains(" ") && !filePath.StartsWith("\""))
+                // Buscar procesos existentes que podrían ser la aplicación principal
+                Process currentProcess = Process.GetCurrentProcess();
+                var processes = Process.GetProcessesByName(currentProcess.ProcessName);
+
+                foreach (var proc in processes)
                 {
-                    safeFilePath = $"\"{filePath}\"";
+                    try
+                    {
+                        if (proc.Id != currentProcess.Id) // No contar este proceso
+                        {
+                            string cmdLine = GetCommandLine(proc.Id);
+                            // Si hay un proceso que no sea un monitor de fondo, es probablemente la UI principal
+                            if (!cmdLine.Contains("/backgroundmonitor") && !string.IsNullOrEmpty(cmdLine))
+                            {
+                                // Encontramos una instancia de la app principal, enviar el archivo a procesar
+                                Console.WriteLine("Se encontró una instancia de la aplicación principal activa");
+
+                                // Crear un archivo marcador para que la aplicación lo detecte
+                                string pendingFile = Path.Combine(
+                                    VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
+                                    "pending_file.marker");
+
+                                File.WriteAllText(pendingFile, filePath);
+
+                                // Intentar activar la ventana
+                                try
+                                {
+                                    proc.EnableRaisingEvents = true;
+                                    proc.Refresh();
+                                    SetForegroundWindow(proc.MainWindowHandle);
+                                }
+                                catch (Exception ex)
+                                {
+                                    WatcherLogger.LogError("Error al activar ventana de proceso existente", ex);
+                                }
+
+                                return;
+                            }
+                        }
+                    }
+                    catch { /* Ignorar errores */ }
                 }
 
-                // Registrar el archivo en un archivo temporal para garantizar persistencia
-                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
-                File.WriteAllText(tempFile, filePath);
+                // La aplicación no está abierta, lanzarla con el argumento adecuado
+                WatcherLogger.LogActivity($"Lanzando aplicación con archivo: {filePath}");
 
-                // Lanzar la aplicación con el archivo como argumento
+                // Evitar múltiples lanzamientos simultáneos
+                string lockFile = Path.Combine(
+                    VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
+                    ".app_launch.lock");
+
+                if (File.Exists(lockFile))
+                {
+                    try
+                    {
+                        DateTime lockTime = File.GetLastWriteTime(lockFile);
+                        if ((DateTime.Now - lockTime).TotalSeconds < 10)
+                        {
+                            // Lanzamiento muy reciente, marcar el archivo y salir
+                            File.WriteAllText(
+                                Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "pending_file.marker"),
+                                filePath);
+
+                            WatcherLogger.LogActivity($"Lanzamiento reciente detectado, archivo marcado: {filePath}");
+                            return;
+                        }
+                    }
+                    catch { /* Ignorar errores leyendo el archivo */ }
+                }
+
+                // Crear/actualizar archivo de bloqueo
+                try { File.WriteAllText(lockFile, DateTime.Now.ToString()); } catch { }
+
+                // Lanzar la aplicación
                 ProcessStartInfo startInfo = new ProcessStartInfo
                 {
-                    FileName = appPath,
-                    Arguments = $"/print:{safeFilePath}",
-                    UseShellExecute = true,
-                    WindowStyle = ProcessWindowStyle.Normal
+                    FileName = Application.ExecutablePath,
+                    Arguments = $"/print:\"{filePath}\"",
+                    UseShellExecute = true
                 };
 
-                Console.WriteLine($"Ejecutando proceso: {appPath} con argumentos: {startInfo.Arguments}");
                 Process.Start(startInfo);
-                return true;
+                WatcherLogger.LogActivity($"Aplicación lanzada para procesar archivo: {filePath}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al lanzar la aplicación: {ex.Message}");
-                Console.WriteLine(ex.StackTrace);
-                return false;
+                WatcherLogger.LogError("Error al lanzar aplicación con archivo", ex);
             }
         }
+
+        // Método auxiliar para obtener la línea de comandos de un proceso
+        private static string GetCommandLine(int processId)
+        {
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {processId}"))
+                {
+                    foreach (var obj in searcher.Get())
+                    {
+                        return obj["CommandLine"]?.ToString() ?? string.Empty;
+                    }
+                }
+                return string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        // Importación de API de Win32 para traer una ventana al frente
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetForegroundWindow(IntPtr hWnd);
     }
 }
