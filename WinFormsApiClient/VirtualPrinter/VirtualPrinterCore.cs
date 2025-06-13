@@ -1,21 +1,22 @@
-﻿using System;
+﻿using Microsoft.Win32;
+using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing.Printing;
 using System.IO;
-using System.Windows.Forms;
-using System.Threading.Tasks;
-using System.Runtime.InteropServices;
-using System.Security.Principal;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using Newtonsoft.Json;
-using Microsoft.Win32;
-using System.Collections.Generic;
 using System.Linq;
 using System.Management;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Runtime.InteropServices;
+using System.Security.Principal;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows.Forms;
 using WinFormsApiClient.VirtualPrinter;
 using WinFormsApiClient.VirtualWatcher;
-using System.Text;
 
 namespace WinFormsApiClient.VirtualPrinter
 {
@@ -675,343 +676,240 @@ Para evitar que aparezca el diálogo de guardar:
             {
                 string outputFolder = FIXED_OUTPUT_PATH;
 
-                // Crear archivo de log inmediatamente para diagnóstico
+                // Crear archivo de log para diagnóstico
                 string printLogPath = Path.Combine(FIXED_OUTPUT_PATH, "print_hook_logs");
                 if (!Directory.Exists(printLogPath))
                     Directory.CreateDirectory(printLogPath);
 
                 string hookLog = Path.Combine(printLogPath, "bullzip_hook.log");
-                File.AppendAllText(hookLog, $"[{DateTime.Now}] Configurando Bullzip con hook de intercepción\r\n");
+                File.AppendAllText(hookLog, $"[{DateTime.Now}] Configurando Bullzip para la impresión\r\n");
 
-                // Registrar inicio del proceso de impresión en init_log.txt
-                string initLogPath = Path.Combine(GetLogFolderPath(), "init_log.txt");
-                File.AppendAllText(initLogPath, $"[{DateTime.Now}] INICIO DE PROCESO DE IMPRESIÓN\r\n");
-                try
-                {
-                    // Activar explícitamente el BufferedPrintListener
-                    var printListener = BufferedPrintListener.Instance;
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] BufferedPrintListener activado para esta impresión\r\n");
-                }
-                catch (Exception listenerEx)
-                {
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al activar BufferedPrintListener: {listenerEx.Message}\r\n");
-                }
-                // NUEVO: Verificar si el monitor está activo, de lo contrario iniciarlo
-                if (!WinFormsApiClient.VirtualWatcher.BackgroundMonitorService._isRunning)
-                {
-                    string mensaje = "Monitor de fondo no activo. Iniciando proceso de sincronización...";
-                    Console.WriteLine(mensaje);
-                    File.AppendAllText(initLogPath, $"[{DateTime.Now}] {mensaje}\r\n");
-                    WatcherLogger.LogActivity("Iniciando sincronización de monitor desde configuración de Bullzip");
+                // Asegurar que la carpeta de salida existe
+                if (!Directory.Exists(outputFolder))
+                    Directory.CreateDirectory(outputFolder);
 
-                    // Usar el método de sincronización de PDFDialogAutomation
-                    bool success = PDFDialogAutomation.EnsureBackgroundMonitorBeforePrinting();
-                    File.AppendAllText(initLogPath, $"[{DateTime.Now}] Resultado sincronización: {(success ? "Éxito" : "Fallido")}\r\n");
-                }
-                else
-                {
-                    string mensaje = "Monitor de fondo ya está activo - continuando con la impresión";
-                    Console.WriteLine(mensaje);
-                    File.AppendAllText(initLogPath, $"[{DateTime.Now}] {mensaje}\r\n");
-                }
+                Console.WriteLine($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
+                WatcherLogger.LogActivity($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
 
-                // Verificar si ya se configuró recientemente (en los últimos 5 minutos)
-                string configMarkerPath = Path.Combine(FIXED_OUTPUT_PATH, ".bullzip_configured");
-                if (File.Exists(configMarkerPath))
-                {
-                    try
-                    {
-                        string lastConfigTimeStr = File.ReadAllText(configMarkerPath);
-                        if (DateTime.TryParse(lastConfigTimeStr, out DateTime lastConfigTime))
-                        {
-                            // Si se configuró hace menos de 5 minutos, no reconfigurar
-                            if ((DateTime.Now - lastConfigTime).TotalMinutes < 5)
-                            {
-                                Console.WriteLine("Bullzip ya configurado recientemente, omitiendo reconfiguración");
-                                return true;
-                            }
-                        }
-                    }
-                    catch { /* Si hay error leyendo el archivo, seguir con la configuración */ }
-                }
-                Console.WriteLine($"Configurando Bullzip PDF Printer para {outputFolder}...");
-                WatcherLogger.LogActivity($"Configurando Bullzip PDF Printer para {outputFolder}");
+                // 1. Crear el archivo batch mejorado para mover específicamente el archivo recién creado
+                string batchPath = Path.Combine(outputFolder, "MoverPDFs.bat");
 
-                // Verificar si Bullzip ya está instalado
-                bool bullzipInstalled = false;
-                foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
-                {
-                    if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
-                    {
-                        bullzipInstalled = true;
-                        Console.WriteLine("Impresora Bullzip encontrada en el sistema");
-                        WatcherLogger.LogActivity("Impresora Bullzip encontrada en el sistema");
-                        break;
-                    }
-                }
+                // Este es un nuevo enfoque donde el batch recibe como parámetro el archivo recién creado
+                string batchContent = $@"@echo off
+title Procesador de PDF para ECM Central
+color 0A
+echo ============================================
+echo    PROCESADOR DE PDF - ECM CENTRAL
+echo ============================================
+echo.
 
-                if (!bullzipInstalled)
-                {
-                    // Descargar e instalar Bullzip PDF Printer silenciosamente
-                    Console.WriteLine("Bullzip no instalado. Iniciando instalación automática...");
-                    WatcherLogger.LogActivity("Bullzip no instalado - Descargando e instalando automáticamente");
+:: Establecer carpeta de logs
+set OUTPUT_FOLDER={outputFolder}
+if not exist ""%OUTPUT_FOLDER%\logs"" mkdir ""%OUTPUT_FOLDER%\logs""
+set LOGFILE=""%OUTPUT_FOLDER%\logs\pdf_processor.log""
 
-                    // URL actualizada para la descarga de Bullzip
-                    string downloadUrl = "https://cdn.bullzip.com/download/pdf/Setup_BullzipPDFPrinter_14_5_0_2974.exe";
-                    string installerPath = Path.Combine(Path.GetTempPath(), "BullzipSetup.exe");
+:: Registrar inicio del procesamiento
+echo [%date% %time%] MoverPDFs.bat iniciado >> %LOGFILE%
 
-                    // Lista de URLs alternativas para probar en caso de error
-                    string[] fallbackUrls = {
-                "https://cdn.bullzip.com/download/pdf/Setup_BullzipPDFPrinter_14_0_0_2888.exe",
-                "https://cdn.bullzip.com/download/pdf/Setup_BullzipPDFPrinter_13_10_0_2636.exe",
-                "https://www.bullzip.com/download/pdf/Setup_BullzipPDFPrinter_13_10_0_2636.exe"
-            };
+:: Si se ha pasado un archivo como parámetro, procesarlo directamente
+if not ""%~1""=="""" (
+    echo [%date% %time%] Procesando archivo recibido: %~1 >> %LOGFILE%
+    echo Procesando archivo: %~1
+    
+    :: Marcar este archivo para procesamiento por la aplicación
+    echo %~1 > ""%OUTPUT_FOLDER%\last_bullzip_file.marker""
+    
+    :: Verificar si la aplicación está ejecutándose
+    tasklist /FI ""IMAGENAME eq WinFormsApiClient.exe"" 2>NUL | find /I /N ""WinFormsApiClient.exe"">NUL
+    if errorlevel 1 (
+        echo [%date% %time%] Iniciando aplicación con archivo: %~1 >> %LOGFILE%
+        start """" ""{Application.ExecutablePath}"" /processfile=""%~1""
+    ) else (
+        echo [%date% %time%] Aplicación ya en ejecución, notificando archivo >> %LOGFILE%
+    )
+    
+    :: Salir del batch después de procesar el archivo específico
+    exit /b 0
+)
 
-                    bool downloadSuccess = false;
-                    Exception lastError = null;
+:: Si no se especificó archivo, buscar en carpetas comunes
+echo [%date% %time%] Buscando archivos PDF en carpetas comunes >> %LOGFILE%
 
-                    try
-                    {
-                        // Intentar descargar de la URL principal
-                        Console.WriteLine($"Descargando instalador de Bullzip PDF Printer desde: {downloadUrl}");
-                        using (var client = new System.Net.WebClient())
-                        {
-                            client.DownloadFile(downloadUrl, installerPath);
-                        }
-                        downloadSuccess = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        // Registrar el error
-                        lastError = ex;
-                        WatcherLogger.LogError("Error en descarga de Bullzip", ex);
-                        Console.WriteLine($"Error al descargar Bullzip: {ex.Message}");
+:: Monitorear carpetas comunes buscando PDFs creados en los últimos 10 segundos
+for %%F in (
+    ""%USERPROFILE%\Downloads\*.pdf""
+    ""%USERPROFILE%\Documents\*.pdf""
+    ""%USERPROFILE%\Desktop\*.pdf""
+    ""%TEMP%\*.pdf""
+) do (
+    :: Verificar si el archivo es reciente (creado/modificado en los últimos segundos)
+    forfiles /P ""%~dp0"" /M ""%%~nxF"" /D +0 /C ""cmd /c echo @path es reciente"" >nul 2>&1
+    if not errorlevel 1 (
+        echo [%date% %time%] Archivo reciente encontrado: %%F >> %LOGFILE%
+        move ""%%F"" ""{outputFolder}\%%~nxF"" > nul 2>&1
+        if not exist ""%%F"" (
+            echo [%date% %time%] Movido correctamente: %%~nxF >> %LOGFILE%
+            echo Archivo movido a: {outputFolder}\%%~nxF
+            
+            :: Marcar para procesamiento
+            echo {outputFolder}\%%~nxF > ""%OUTPUT_FOLDER%\last_bullzip_file.marker""
+        )
+    )
+)
 
-                        // Intentar URLs alternativas
-                        foreach (string fallbackUrl in fallbackUrls)
-                        {
-                            try
-                            {
-                                Console.WriteLine($"Intentando URL alternativa: {fallbackUrl}");
-                                WatcherLogger.LogActivity($"Intentando URL alternativa para Bullzip: {fallbackUrl}");
+exit /b 0
+";
 
-                                using (var client = new System.Net.WebClient())
-                                {
-                                    client.DownloadFile(fallbackUrl, installerPath);
-                                }
+                // Escribir el archivo batch
+                File.WriteAllText(batchPath, batchContent);
+                File.AppendAllText(hookLog, $"[{DateTime.Now}] Archivo batch creado: {batchPath}\r\n");
 
-                                downloadSuccess = true;
-                                Console.WriteLine($"Descarga exitosa desde URL alternativa: {fallbackUrl}");
-                                WatcherLogger.LogActivity($"Descarga exitosa desde URL alternativa: {fallbackUrl}");
-                                break;
-                            }
-                            catch (Exception fallbackEx)
-                            {
-                                Console.WriteLine($"Error en URL alternativa {fallbackUrl}: {fallbackEx.Message}");
-                            }
-                        }
-                    }
-
-                    // Verificar si alguna descarga tuvo éxito
-                    if (!downloadSuccess)
-                    {
-                        // Buscar versiones locales del instalador como último recurso
-                        string[] localPaths = {
-                    Path.Combine(Application.StartupPath, "installers", "BullzipSetup.exe"),
-                    Path.Combine(Application.StartupPath, "BullzipSetup.exe"),
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "ECM Central", "BullzipSetup.exe"),
-                    Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "ECM Central", "BullzipSetup.exe")
-                };
-
-                        foreach (string localPath in localPaths)
-                        {
-                            if (File.Exists(localPath))
-                            {
-                                Console.WriteLine($"Usando instalador local: {localPath}");
-                                WatcherLogger.LogActivity($"Usando instalador local de Bullzip: {localPath}");
-                                File.Copy(localPath, installerPath, true);
-                                downloadSuccess = true;
-                                break;
-                            }
-                        }
-
-                        if (!downloadSuccess)
-                        {
-                            Console.WriteLine("No se pudo descargar o encontrar el instalador de Bullzip.");
-                            if (lastError != null)
-                            {
-                                Console.WriteLine($"Último error: {lastError.Message}");
-                            }
-                            return false;
-                        }
-                    }
-
-                    // Instalar silenciosamente
-                    Console.WriteLine("Instalando Bullzip PDF Printer...");
-                    WatcherLogger.LogActivity("Instalando Bullzip PDF Printer");
-
-                    ProcessStartInfo psi = new ProcessStartInfo
-                    {
-                        FileName = installerPath,
-                        Arguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART",
-                        UseShellExecute = true,
-                        Verb = "runas" // Ejecutar como administrador
-                    };
-
-                    using (var process = Process.Start(psi))
-                    {
-                        process.WaitForExit();
-                        Console.WriteLine($"Instalación de Bullzip completada (código: {process.ExitCode})");
-                        WatcherLogger.LogActivity($"Instalación de Bullzip completada (código: {process.ExitCode})");
-                    }
-
-                    // Esperar a que se complete la instalación
-                    System.Threading.Thread.Sleep(6000);
-
-                    // Verificar que se haya instalado correctamente
-                    bullzipInstalled = false;
-                    foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
-                    {
-                        if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
-                        {
-                            bullzipInstalled = true;
-                            Console.WriteLine("✓ Verificación: Impresora Bullzip instalada correctamente");
-                            WatcherLogger.LogActivity("✓ Bullzip PDF Printer instalado correctamente");
-                            break;
-                        }
-                    }
-
-                    if (!bullzipInstalled)
-                    {
-                        Console.WriteLine("× Verificación falló: No se encontró Bullzip después de la instalación");
-                        WatcherLogger.LogActivity("× No se encontró Bullzip después de la instalación");
-                        return false;
-                    }
-                }
-
-                // Configurar Bullzip para guardar automáticamente en la carpeta destino
-                Console.WriteLine($"Configurando Bullzip para guardar en: {outputFolder}");
-                WatcherLogger.LogActivity($"Configurando parámetros de Bullzip para carpeta: {outputFolder}");
-
-                // 1. Crear carpeta de configuración en AppData
-                string configFolder = Path.Combine(
+                // 2. Configurar Bullzip para que use este batch con el parámetro correcto
+                string bullzipConfigFolder = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                     "Bullzip", "PDF Printer");
 
-                if (!Directory.Exists(configFolder))
-                {
-                    Directory.CreateDirectory(configFolder);
-                }
+                if (!Directory.Exists(bullzipConfigFolder))
+                    Directory.CreateDirectory(bullzipConfigFolder);
 
-                // 2. Crear archivo de configuración para guardar automáticamente
-                string iniPath = Path.Combine(configFolder, "settings.ini");
+                string iniPath = Path.Combine(bullzipConfigFolder, "settings.ini");
+
                 StringBuilder iniContent = new StringBuilder();
                 iniContent.AppendLine("[PDF Printer]");
                 iniContent.AppendLine($"Output={outputFolder}");
-                iniContent.AppendLine("ShowSaveAS=never");  // No mostrar diálogo
-                iniContent.AppendLine("ShowSettings=never"); // No mostrar configuración
-                iniContent.AppendLine("ShowProgress=no");    // No mostrar progreso
-                iniContent.AppendLine("ShowProgressFinished=no"); // No mostrar finalización
-                iniContent.AppendLine("ConfirmOverwrite=no");     // No confirmar sobrescritura
-                iniContent.AppendLine("OpenViewer=no");           // No abrir en visor
+                iniContent.AppendLine("ShowSaveAS=never");
+                iniContent.AppendLine("ShowSettings=never");
+                iniContent.AppendLine("ShowProgress=no");
+                iniContent.AppendLine("ShowProgressFinished=no");
+                iniContent.AppendLine("ConfirmOverwrite=no");
+                iniContent.AppendLine("OpenViewer=no");
 
-                // MODIFICACIÓN: No ejecutar ningún comando al finalizar la impresión
-                iniContent.AppendLine("RunOnSuccess=");
-                iniContent.AppendLine($"RunOnSuccessParameters=\"{Application.ExecutablePath}\" /silentprint=\"%s\"");
+                // AMBOS eventos: Antes Y después de imprimir
+                iniContent.AppendLine($"RunOnSuccess=\"{batchPath}\"");
+                iniContent.AppendLine("RunOnSuccessParameters=\"%s\"");
 
-                iniContent.AppendLine($"FilenameTemplate=ECM_{DateTime.Now:yyyyMMdd}_<datetime:hhmmss>"); // Plantilla de nombre
-                iniContent.AppendLine("RememberLastFolders=no");  // No recordar última carpeta
-                iniContent.AppendLine("RememberLastName=no");     // No recordar último nombre
-                iniContent.AppendLine("RetainDialog=no");         // No mantener diálogo
-                iniContent.AppendLine("DefaultSaveSettings=yes"); // Usar configuración por defecto de guardado
-                                                                  // Agregar la configuración para ejecutar nuestro código antes de procesar
+                // IMPORTANTE: Ejecutar también MoverPDFs.bat al INICIO del trabajo
                 iniContent.AppendLine("RunOnPrinterEvent=1");
-                iniContent.AppendLine($"RunPrinterEvent=\"{Path.Combine(outputFolder, "ecm_print_hook.bat")}\"");
+                iniContent.AppendLine($"RunPrinterEvent=\"{batchPath}\"");
                 iniContent.AppendLine("RunPrinterEventTiming=before");
 
-                // Agregar además un comando post-procesamiento
-                iniContent.AppendLine("RunOnSuccess=");
-                iniContent.AppendLine($"RunOnSuccessParameters={Path.GetFullPath(System.Windows.Forms.Application.ExecutablePath)} /backgroundmonitor");
+                iniContent.AppendLine($"FilenameTemplate=ECM_{DateTime.Now:yyyyMMdd}_<time:HHmmss>");
+                iniContent.AppendLine("RememberLastFolders=no");
+                iniContent.AppendLine("RememberLastName=no");
+                iniContent.AppendLine("RetainDialog=no");
+                iniContent.AppendLine("DefaultSaveSettings=yes");
+                iniContent.AppendLine("Debug=1"); // Activar modo debug de Bullzip
+                iniContent.AppendLine($"DebugFile={outputFolder}\\logs\\bullzip_debug.log");
 
                 File.WriteAllText(iniPath, iniContent.ToString());
-                Console.WriteLine("Archivo de configuración creado: " + iniPath);
-                WatcherLogger.LogActivity("Archivo de configuración de Bullzip creado");
+                File.AppendAllText(hookLog, $"[{DateTime.Now}] Configuración de Bullzip actualizada: {iniPath}\r\n");
 
-                // También configurar un FileSystemWatcher como respaldo
-                ConfigureBullzipFileWatcher(outputFolder);
-
-                // En VirtualPrinterCore.cs - método ConfigureBullzipPrinter()
-                // Modifica esta parte para evitar intentos repetidos de renombrar la impresora
-
-                // 3. Configurar como impresora con nombre ECM Central (sin renombrarla)
+                // 3. Asegurar que el archivo MoverPDFs.bat tiene los permisos necesarios para ejecutarse
                 try
                 {
-                    // Usar PowerShell para configurar la impresora sin renombrarla
-                    string psCommand = $@"
-try {{
-    # Obtener la impresora Bullzip
-    $printerName = $null
-    Get-Printer | ForEach-Object {{
-        if ($_.Name -like '*Bullzip*' -or $_.Name -like '*PDF Printer*') {{
-            $printerName = $_.Name
-            Write-Output ""Impresora Bullzip encontrada: $($_.Name)""
-        }}
-    }}
-    
-    if ($printerName) {{
-        # Asegurarse que está instalada
-        Write-Output ""Impresora Bullzip encontrada: $printerName""
-        
-        # Configurar como predeterminada (varios métodos)
-        try {{
-            (New-Object -ComObject WScript.Network).SetDefaultPrinter($printerName)
-            Write-Output ""Impresora configurada como predeterminada (método COM)""
-        }} catch {{
-            Write-Output ""No se pudo configurar como predeterminada""
-        }}
-        
-        return $true
-    }} else {{
-        Write-Output ""No se encontró la impresora Bullzip""
-        return $false
-    }}
-}} catch {{
-    Write-Output ""Error: $($_.Exception.Message)""
-    return $false
-}}";
-
-                    string result = PowerShellHelper.RunPowerShellCommandWithOutput(psCommand);
-                    Console.WriteLine("Resultado de configuración: " + result);
-                    WatcherLogger.LogActivity("Resultado de configuración de Bullzip: " +
-                        result.Replace("\r\n", " ").Replace("\n", " ").Substring(0, Math.Min(100, result.Length)));
-
-                    if (result.Contains("predeterminada") || result.Contains("Bullzip encontrada"))
-                    {
-                        // Crear un archivo de marcador para evitar reconfiguración constante
-                        string markerFile = Path.Combine(FIXED_OUTPUT_PATH, ".bullzip_configured");
-                        File.WriteAllText(markerFile, DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
-
-                        // Registrar éxito
-                        Console.WriteLine("✓ Bullzip PDF Printer configurada con éxito");
-                        WatcherLogger.LogActivity("✓ Bullzip PDF Printer configurada con éxito");
-                        EnsureMonitorForBullzip();
-                        return true;
-                    }
+                    EnsureScriptPermissions(batchPath);
+                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Permisos aplicados al batch\r\n");
                 }
-                catch (Exception psEx)
+                catch (Exception permEx)
                 {
-                    Console.WriteLine($"Error al configurar impresora Bullzip: {psEx.Message}");
-                    WatcherLogger.LogError("Error al configurar impresora Bullzip", psEx);
+                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al aplicar permisos: {permEx.Message}\r\n");
                 }
-                // Si llegamos aquí, hubo algún problema
-                Console.WriteLine("No se pudo completar la configuración de Bullzip. Usando métodos alternativos.");
-                WatcherLogger.LogActivity("× No se pudo completar configuración de Bullzip");
-                return false;
+
+                // 4. Crear un FileSystemWatcher para detectar el archivo creado por Bullzip
+                try
+                {
+                    // Configurar FileSystemWatcher para carpeta de salida
+                    FileSystemWatcher watcher = new FileSystemWatcher
+                    {
+                        Path = outputFolder,
+                        Filter = "*.pdf",
+                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
+                        EnableRaisingEvents = true
+                    };
+
+                    // Evento que se dispara cuando se crea un archivo
+                    watcher.Created += (sender, e) =>
+                    {
+                        try
+                        {
+                            string logFilePath = Path.Combine(printLogPath, "pdf_watcher.log");
+                            File.AppendAllText(logFilePath, $"[{DateTime.Now}] Nuevo PDF detectado: {e.FullPath}\r\n");
+
+                            // Esperar a que el archivo se complete
+                            Thread.Sleep(1000);
+
+                            // Verificar que el archivo exista aún
+                            if (File.Exists(e.FullPath))
+                            {
+                                // Registrarlo para procesamiento
+                                string markerPath = Path.Combine(outputFolder, "last_bullzip_file.marker");
+                                File.WriteAllText(markerPath, e.FullPath);
+                                File.AppendAllText(logFilePath, $"[{DateTime.Now}] Archivo marcado para procesamiento: {e.FullPath}\r\n");
+
+                                // Lanzar proceso si es necesario
+                                Process[] processes = Process.GetProcessesByName("WinFormsApiClient");
+                                if (processes.Length == 0)
+                                {
+                                    ProcessStartInfo startInfo = new ProcessStartInfo
+                                    {
+                                        FileName = Application.ExecutablePath,
+                                        Arguments = $"/processfile=\"{e.FullPath}\"",
+                                        UseShellExecute = true
+                                    };
+
+                                    Process.Start(startInfo);
+                                    File.AppendAllText(logFilePath, $"[{DateTime.Now}] Aplicación iniciada para procesar archivo\r\n");
+                                }
+                                else
+                                {
+                                    File.AppendAllText(logFilePath, $"[{DateTime.Now}] Aplicación ya en ejecución, archivo marcado\r\n");
+                                }
+                            }
+                        }
+                        catch (Exception watcherEx)
+                        {
+                            string errorPath = Path.Combine(printLogPath, "pdf_watcher_error.log");
+                            File.AppendAllText(errorPath, $"[{DateTime.Now}] Error en watcher: {watcherEx.Message}\r\n");
+                        }
+                    };
+
+                    File.AppendAllText(hookLog, $"[{DateTime.Now}] FileSystemWatcher configurado para: {outputFolder}\r\n");
+                }
+                catch (Exception watcherEx)
+                {
+                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al configurar watcher: {watcherEx.Message}\r\n");
+                }
+
+                // 5. También crear un archivo de instrucciones
+                string instructionsPath = Path.Combine(outputFolder, "INSTRUCCIONES.txt");
+                string instructions = $@"INSTRUCCIONES PARA USAR ECM CENTRAL CON BULLZIP
+=============================================
+
+1. Para imprimir documentos:
+   - Seleccione 'ECM Central Printer' o 'Bullzip PDF Printer' al imprimir
+   - El archivo PDF se guardará automáticamente en esta carpeta
+   - La aplicación ECM Central procesará automáticamente el archivo
+
+2. Si necesita procesar manualmente un archivo PDF:
+   - Colóquelo en esta carpeta ({outputFolder})
+   - La aplicación lo detectará automáticamente
+
+3. Si encuentra algún problema:
+   - Ejecute manualmente el archivo MoverPDFs.bat en esta carpeta
+
+Configurado el {DateTime.Now}
+";
+                File.WriteAllText(instructionsPath, instructions);
+
+                Console.WriteLine("✓ Configuración de Bullzip completada con éxito");
+                WatcherLogger.LogActivity("Configuración de Bullzip completada con éxito");
+
+                return true;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error general al configurar Bullzip PDF Printer: {ex.Message}");
-                WatcherLogger.LogError("Error general en configuración Bullzip", ex);
+                Console.WriteLine($"Error al configurar Bullzip: {ex.Message}");
+                WatcherLogger.LogError("Error al configurar Bullzip", ex);
                 return false;
             }
         }
