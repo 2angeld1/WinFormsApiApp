@@ -786,6 +786,24 @@ Si tiene problemas con la automatización, puede:
                 string outputFolder = VirtualPrinterCore.FIXED_OUTPUT_PATH;
                 string batchFilePath = Path.Combine(outputFolder, "MoverPDFs.bat");
 
+                // NUEVO: Verificar primero si ya hay una instancia en ejecución
+                // Si ya está ejecutándose, no iniciamos otra
+                Process[] existingProcesses = Process.GetProcessesByName("cmd");
+                foreach (var proc in existingProcesses)
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(proc.MainWindowTitle) &&
+                           (proc.MainWindowTitle.Contains("Monitor de PDF") ||
+                            proc.MainWindowTitle.Contains("ECM Central")))
+                        {
+                            Console.WriteLine($"Ya existe una instancia de MoverPDFs.bat en ejecución (PID: {proc.Id})");
+                            return;
+                        }
+                    }
+                    catch { /* Ignorar errores al acceder a propiedades del proceso */ }
+                }
+
                 // Crear contenido del archivo batch para mover PDFs - Versión simplificada y más robusta
                 string batchContent = $@"@echo off
 title Monitor de PDF para ECM Central
@@ -820,15 +838,19 @@ for %%F in (""%USERPROFILE%\Documents\*.pdf"" ""%USERPROFILE%\Desktop\*.pdf"" ""
 timeout /T 2 /NOBREAK > nul
 goto loop
 ";
-                // Guardar el archivo batch primero, antes de intentar ejecutarlo
+                // Guardar el archivo batch primero
                 File.WriteAllText(batchFilePath, batchContent);
                 Console.WriteLine($"Archivo batch de respaldo creado en: {batchFilePath}");
 
                 // Asegurar permisos para ejecución
                 VirtualPrinterCore.EnsureScriptPermissions(batchFilePath);
 
-                // Ahora ejecutar el batch
-                RunBatchHidden(batchFilePath);
+                // MODIFICADO: No ejecutar el batch automáticamente al crearlo
+                // RunBatchHidden(batchFilePath); - Esta línea fue eliminada para evitar ejecución automática
+
+                // Creamos un archivo marcador que indica que el batch está listo para ser usado
+                string markerPath = Path.Combine(outputFolder, "batch_ready.marker");
+                File.WriteAllText(markerPath, $"Batch creado: {DateTime.Now}");
             }
             catch (Exception ex)
             {
@@ -1344,8 +1366,27 @@ EndFunc";
                     Directory.CreateDirectory(logsFolder);
                 }
 
-                // Versión mejorada con detección avanzada de archivos y manejo de errores
-                // FIX: Se cambia la forma en que las variables se definen y se usa un valor fijo para CHECK_INTERVAL
+                // NUEVO: Verificar primero si ya hay una instancia en ejecución
+                // Si ya está ejecutándose, no iniciamos otra
+                bool alreadyRunning = false;
+                Process[] existingProcesses = Process.GetProcessesByName("cmd");
+                foreach (var proc in existingProcesses)
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(proc.MainWindowTitle) && 
+                            (proc.MainWindowTitle.Contains("Monitor de PDF") || 
+                             proc.MainWindowTitle.Contains("ECM Central") ||
+                             proc.MainWindowTitle.Contains("MoverPDFs")))
+                        {
+                            alreadyRunning = true;
+                            break;
+                        }
+                    }
+                    catch { /* Ignorar errores al acceder a propiedades del proceso */ }
+                }
+
+                // Crear contenido del archivo batch para mover PDFs - Versión simplificada y más robusta
                 string batchContent = @"@echo off
 :: Monitor de PDF para ECM Central (Versión 2.7 - " + DateTime.Now.ToString("dd/MM/yyyy HH:mm") + @")
 :: Monitorea y procesa archivos PDF para ECM Central
@@ -1574,23 +1615,31 @@ $shortcut.Save()";
                 }
                 catch (Exception) { /* Ignorar errores al crear el acceso directo */ }
 
-                // Ejecutar el batch en segundo plano
-                try
+                // MODIFICADO: Solo ejecutar si no hay una instancia en ejecución
+                if (!alreadyRunning)
                 {
-                    ProcessStartInfo psi = new ProcessStartInfo
+                    // Ejecutar el batch en segundo plano
+                    try
                     {
-                        FileName = batchFilePath,
-                        UseShellExecute = true,
-                        WindowStyle = ProcessWindowStyle.Minimized
-                    };
+                        ProcessStartInfo psi = new ProcessStartInfo
+                        {
+                            FileName = batchFilePath,
+                            UseShellExecute = true,
+                            WindowStyle = ProcessWindowStyle.Minimized
+                        };
 
-                    Process.Start(psi);
-                    WatcherLogger.LogActivity("MoverPDFs.bat iniciado en segundo plano");
+                        Process.Start(psi);
+                        WatcherLogger.LogActivity("MoverPDFs.bat iniciado en segundo plano");
+                    }
+                    catch (Exception ex)
+                    {
+                        string errorLog = Path.Combine(logsFolder, "batch_execution_error.log");
+                        File.AppendAllText(errorLog, $"[{DateTime.Now}] Error al iniciar batch: {ex.Message}\r\n{ex.StackTrace}\r\n");
+                    }
                 }
-                catch (Exception ex)
+                else
                 {
-                    string errorLog = Path.Combine(logsFolder, "batch_execution_error.log");
-                    File.AppendAllText(errorLog, $"[{DateTime.Now}] Error al iniciar batch: {ex.Message}\r\n{ex.StackTrace}\r\n");
+                    WatcherLogger.LogActivity("No se inició MoverPDFs.bat porque ya hay una instancia en ejecución");
                 }
             }
             catch (Exception ex)
@@ -1708,49 +1757,6 @@ logFile.Close
                 return false;
             }
         }
-        /// <summary>
-        /// Crea un acceso directo que ejecuta el batch en modo oculto a través de VBScript
-        /// </summary>
-        private static void CreateHiddenBatchShortcut(string batchFilePath)
-        {
-            try
-            {
-                string outputFolder = VirtualPrinterCore.FIXED_OUTPUT_PATH;
-                string vbsPath = Path.Combine(outputFolder, "SilentLauncherForMoverPDFs.vbs");
-
-                // Asegurar que el script VBScript existe
-                if (!File.Exists(vbsPath))
-                {
-                    CreateSilentVBScript();
-                }
-
-                string startupFolder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-                    "ECM Monitor PDF.lnk");
-
-                // Script PowerShell que crea un acceso directo al script VBScript (no al batch directamente)
-                string psCommand = $@"
-$WshShell = New-Object -ComObject WScript.Shell
-$shortcut = $WshShell.CreateShortcut('{startupFolder.Replace("\\", "\\\\")}')
-$shortcut.TargetPath = 'wscript.exe'
-$shortcut.Arguments = '\""{vbsPath.Replace("\\", "\\\\")}\""'
-$shortcut.WindowStyle = 7
-$shortcut.WorkingDirectory = '{Path.GetDirectoryName(vbsPath).Replace("\\", "\\\\")}'
-$shortcut.Description = 'Monitor de PDF para ECM Central (Modo silencioso)'
-$shortcut.IconLocation = '%SystemRoot%\System32\shell32.dll,46'
-$shortcut.Save()
-Write-Output 'Acceso directo modo oculto creado correctamente'";
-
-                PowerShellHelper.RunPowerShellCommand(psCommand);
-                WatcherLogger.LogActivity("Acceso directo en modo oculto creado para VBScript de MoverPDFs.bat");
-            }
-            catch (Exception ex)
-            {
-                // Registrar error pero no interrumpir el proceso
-                string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "shortcut_error.log");
-                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al crear acceso directo oculto: {ex.Message}\r\n");
-            }
-        }
 
         public static void RunBatchHidden(string batchFilePath)
         {
@@ -1775,6 +1781,44 @@ Write-Output 'Acceso directo modo oculto creado correctamente'";
                     Directory.CreateDirectory(logFolder);
 
                 string logFile = Path.Combine(logFolder, "batch_executions.log");
+
+                // NUEVO: Verificar si ya hay una instancia en ejecución del batch
+                string batchName = Path.GetFileNameWithoutExtension(batchFilePath);
+                Process[] existingProcesses = Process.GetProcessesByName("cmd");
+                bool alreadyRunning = false;
+
+                foreach (var proc in existingProcesses)
+                {
+                    try
+                    {
+                        if (!string.IsNullOrEmpty(proc.MainWindowTitle) &&
+                            (proc.MainWindowTitle.Contains("Monitor de PDF") ||
+                             proc.MainWindowTitle.Contains("ECM Central") ||
+                             proc.MainWindowTitle.Contains(batchName)))
+                        {
+                            alreadyRunning = true;
+                            File.AppendAllText(logFile, $"[{DateTime.Now}] Ya existe una instancia de MoverPDFs.bat en ejecución (PID: {proc.Id})\r\n");
+
+                            // Activar la ventana existente en lugar de abrir otra
+                            try
+                            {
+                                Win32API.SetForegroundWindow(proc.MainWindowHandle);
+                                WatcherLogger.LogActivity("Activada ventana existente de MoverPDFs.bat");
+                            }
+                            catch { /* Ignorar errores al activar la ventana */ }
+
+                            return;
+                        }
+                    }
+                    catch { /* Ignorar errores al acceder a propiedades del proceso */ }
+                }
+
+                if (alreadyRunning)
+                {
+                    WatcherLogger.LogActivity("Ya existe una instancia de MoverPDFs.bat en ejecución, no se iniciará otra");
+                    return;
+                }
+
                 File.AppendAllText(logFile, $"[{DateTime.Now}] Ejecutando batch: {batchFilePath}\r\n");
 
                 // Usar método más simple que casi siempre funciona
