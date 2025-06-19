@@ -779,9 +779,6 @@ Si tiene problemas con la automatización, puede:
             }
         }
 
-        /// <summary>
-        /// Crea un archivo batch como método alternativo para la automatización
-        /// </summary>
         public static void CreateBackupBatchFile()
         {
             try
@@ -789,7 +786,7 @@ Si tiene problemas con la automatización, puede:
                 string outputFolder = VirtualPrinterCore.FIXED_OUTPUT_PATH;
                 string batchFilePath = Path.Combine(outputFolder, "MoverPDFs.bat");
 
-                // Crear contenido del archivo batch para mover PDFs
+                // Crear contenido del archivo batch para mover PDFs - Versión simplificada y más robusta
                 string batchContent = $@"@echo off
 title Monitor de PDF para ECM Central
 color 0A
@@ -810,21 +807,28 @@ echo (Presione Ctrl+C para finalizar)
 :loop
 :: Monitorear carpetas comunes
 for %%F in (""%USERPROFILE%\Documents\*.pdf"" ""%USERPROFILE%\Desktop\*.pdf"" ""%USERPROFILE%\Downloads\*.pdf"") do (
-    echo Encontrado archivo: %%F
-    move ""%%F"" ""{outputFolder}\%%~nxF"" > nul 2>&1
-    if not exist ""%%F"" (
-        echo Archivo movido correctamente a {outputFolder}\%%~nxF
+    if exist ""%%F"" (
+        echo Encontrado archivo: %%F
+        move ""%%F"" ""{outputFolder}\%%~nxF"" > nul 2>&1
+        if not exist ""%%F"" (
+            echo Archivo movido correctamente a {outputFolder}\%%~nxF
+        )
     )
 )
 
-:: Esperar 2 segundos y repetir
+:: Esperar 2 segundos y repetir - USANDO VALOR FIJO
 timeout /T 2 /NOBREAK > nul
 goto loop
 ";
-                RunBatchHidden(batchFilePath);
-                // Guardar el archivo batch
+                // Guardar el archivo batch primero, antes de intentar ejecutarlo
                 File.WriteAllText(batchFilePath, batchContent);
                 Console.WriteLine($"Archivo batch de respaldo creado en: {batchFilePath}");
+
+                // Asegurar permisos para ejecución
+                VirtualPrinterCore.EnsureScriptPermissions(batchFilePath);
+
+                // Ahora ejecutar el batch
+                RunBatchHidden(batchFilePath);
             }
             catch (Exception ex)
             {
@@ -1341,8 +1345,9 @@ EndFunc";
                 }
 
                 // Versión mejorada con detección avanzada de archivos y manejo de errores
+                // FIX: Se cambia la forma en que las variables se definen y se usa un valor fijo para CHECK_INTERVAL
                 string batchContent = @"@echo off
-:: Monitor de PDF para ECM Central (Versión 2.6 - " + DateTime.Now.ToString("dd/MM/yyyy HH:mm") + @")
+:: Monitor de PDF para ECM Central (Versión 2.7 - " + DateTime.Now.ToString("dd/MM/yyyy HH:mm") + @")
 :: Monitorea y procesa archivos PDF para ECM Central
 setlocal EnableDelayedExpansion
 
@@ -1350,21 +1355,22 @@ title ECM Central - Monitor de PDF
 color 0A
 
 :: Configuración de entorno
-set OUTPUT_FOLDER=" + outputFolder + @"
-set LOGS_FOLDER=" + outputFolder + @"\logs
-set LOG_FILE=!LOGS_FOLDER!\pdf_monitor.log
-set ERROR_LOG=!LOGS_FOLDER!\pdf_errors.log
-set MARKER_FILE=!OUTPUT_FOLDER!\last_processed_file.marker
-set PENDING_MARKER=!OUTPUT_FOLDER!\pending_pdf.marker
+set ""OUTPUT_FOLDER=" + outputFolder + @"""
+set ""LOGS_FOLDER=" + outputFolder + @"\logs""
+set ""LOG_FILE=%LOGS_FOLDER%\pdf_monitor.log""
+set ""ERROR_LOG=%LOGS_FOLDER%\pdf_errors.log""
+set ""MARKER_FILE=%OUTPUT_FOLDER%\last_processed_file.marker""
+set ""PENDING_MARKER=%OUTPUT_FOLDER%\pending_pdf.marker""
+:: FIX: Usar valor fijo en lugar de variable
 set CHECK_INTERVAL=2
 
 :: Crear carpeta de logs si no existe
-if not exist ""!LOGS_FOLDER!"" mkdir ""!LOGS_FOLDER!""
+if not exist ""%LOGS_FOLDER%"" mkdir ""%LOGS_FOLDER%""
 
 :: Función de registro
 call :log ""===== INICIO DEL MONITOR DE PDF - ECM CENTRAL =====""
-call :log ""Carpeta de salida: !OUTPUT_FOLDER!""
-call :log ""Intervalo de verificación: !CHECK_INTERVAL! segundos""
+call :log ""Carpeta de salida: %OUTPUT_FOLDER%""
+call :log ""Intervalo de verificación: %CHECK_INTERVAL% segundos""
 
 echo ============================================
 echo    MONITOR AUTOMATICO DE PDF - ECM CENTRAL
@@ -1373,11 +1379,11 @@ echo.
 echo Monitoreando PDFs en carpetas del sistema...
 echo Los archivos serán procesados automáticamente.
 echo.
-echo Carpeta destino: !OUTPUT_FOLDER!
+echo Carpeta destino: %OUTPUT_FOLDER%
 echo.
 
 :: Inicialización - verificar y corregir permisos
-icacls ""!OUTPUT_FOLDER!"" /grant Everyone:(OI)(CI)F >nul 2>&1
+icacls ""%OUTPUT_FOLDER%"" /grant Everyone:(OI)(CI)F >nul 2>&1
 call :log ""Permisos verificados para carpeta de salida""
 
 :: Verificar si la aplicación ECM está en ejecución
@@ -1391,7 +1397,8 @@ if errorlevel 1 (
 :: Bucle principal
 :loop
 call :process_folders
-timeout /T !CHECK_INTERVAL! /NOBREAK > nul
+:: FIX: Usar un valor fijo para el timeout
+timeout /T 2 /NOBREAK > nul
 goto loop
 
 :: Función para procesar todas las carpetas
@@ -1405,31 +1412,29 @@ call :check_folder ""%TEMP%""
 call :check_folder ""C:\Windows\Temp""
 call :check_folder ""%USERPROFILE%\OneDrive\Documentos""
 call :check_folder ""C:\Users\Public\Documents""
-call :check_folder ""%USERPROFILE%\AppData\Local\Microsoft\Windows\INetCache""
-call :check_folder ""%USERPROFILE%\AppData\Local\Microsoft\Windows\Temporary Internet Files""
 
 :: También verificar si hay archivos recientes en la carpeta de salida
-for %%F in (""!OUTPUT_FOLDER!\*.pdf"") do (
+for %%F in (""%OUTPUT_FOLDER%\*.pdf"") do (
     :: Solo procesar archivos creados/modificados en los últimos 15 minutos
-    forfiles /P ""!OUTPUT_FOLDER!"" /M ""%%~nxF"" /D -0 /C ""cmd /c if @isdir==FALSE (echo @path & exit 0)"" >nul 2>&1
+    forfiles /P ""%OUTPUT_FOLDER%"" /M ""%%~nxF"" /D -0 /C ""cmd /c if @isdir==FALSE (echo @path & exit 0)"" >nul 2>&1
     if not errorlevel 1 (
         :: Archivo reciente encontrado, registrar para procesamiento
         call :log ""Archivo reciente encontrado en carpeta destino: %%~nxF""
         :: Marcar para procesamiento
-        echo %%F > ""!PENDING_MARKER!""
+        echo %%F > ""%PENDING_MARKER%""
     )
 )
 
 :: Verificar si hay un archivo último guardado por AutoIT o Bullzip
-if exist ""!OUTPUT_FOLDER!\ultimo_archivo_guardado.txt"" (
-    for /f ""delims="" %%f in ('type ""!OUTPUT_FOLDER!\ultimo_archivo_guardado.txt""') do (
-        set ULTIMO_ARCHIVO=%%f
+if exist ""%OUTPUT_FOLDER%\ultimo_archivo_guardado.txt"" (
+    for /f ""delims="" %%f in ('type ""%OUTPUT_FOLDER%\ultimo_archivo_guardado.txt""') do (
+        set ""ULTIMO_ARCHIVO=%%f""
         if exist ""!ULTIMO_ARCHIVO!"" (
             call :log ""Procesando archivo guardado por AutoIT/Bullzip: !ULTIMO_ARCHIVO!""
             :: Marcar para procesamiento
-            echo !ULTIMO_ARCHIVO! > ""!PENDING_MARKER!""
+            echo !ULTIMO_ARCHIVO! > ""%PENDING_MARKER%""
             :: Eliminar el archivo de registro después de procesarlo
-            del ""!OUTPUT_FOLDER!\ultimo_archivo_guardado.txt"" >nul 2>&1
+            del ""%OUTPUT_FOLDER%\ultimo_archivo_guardado.txt"" >nul 2>&1
         )
     )
 )
@@ -1438,7 +1443,7 @@ exit /b 0
 
 :: Función para revisar una carpeta específica
 :check_folder
-set FOLDER=%~1
+set ""FOLDER=%~1""
 if exist ""%FOLDER%"" (
     for %%F in (""%FOLDER%\*.pdf"") do (
         call :check_file ""%%F""
@@ -1450,7 +1455,7 @@ exit /b 0
 :check_file
 set ""filename=%~1""
 set ""basename=%~nx1""
-set ""target=!OUTPUT_FOLDER!\%~nx1""
+set ""target=%OUTPUT_FOLDER%\%~nx1""
 
 :: Verificar si el archivo está en uso/bloqueado
 copy /b ""!filename!""+,, ""!filename!"".testlock >nul 2>&1
@@ -1468,10 +1473,10 @@ if exist ""!filename!"".testlock (
             call :log ""Archivo movido correctamente a: !target!""
             
             :: Marcar este archivo para procesamiento
-            echo !target! > ""!PENDING_MARKER!""
+            echo !target! > ""%PENDING_MARKER%""
             
             :: Registrar como último archivo procesado
-            echo !target! > ""!MARKER_FILE!""
+            echo !target! > ""%MARKER_FILE%""
             
             :: Verificar si la aplicación está en ejecución
             tasklist /FI ""IMAGENAME eq WinFormsApiClient.exe"" 2>NUL | find /I /N ""WinFormsApiClient.exe"">NUL
@@ -1497,12 +1502,12 @@ exit /b 0
 
 :: Función de registro
 :log
-echo [%date% %time%] %~1 >> ""!LOG_FILE!""
+echo [%date% %time%] %~1 >> ""%LOG_FILE%""
 exit /b 0
 
 :log_error
-echo [%date% %time%] ERROR: %~1 >> ""!ERROR_LOG!""
-echo [%date% %time%] ERROR: %~1 >> ""!LOG_FILE!""
+echo [%date% %time%] ERROR: %~1 >> ""%ERROR_LOG%""
+echo [%date% %time%] ERROR: %~1 >> ""%LOG_FILE%""
 exit /b 0
 ";
 
@@ -1747,9 +1752,6 @@ Write-Output 'Acceso directo modo oculto creado correctamente'";
             }
         }
 
-        /// <summary>
-        /// Ejecuta el batch en modo oculto sin mostrar ventana CMD
-        /// </summary>
         public static void RunBatchHidden(string batchFilePath)
         {
             try
@@ -1775,53 +1777,68 @@ Write-Output 'Acceso directo modo oculto creado correctamente'";
                 string logFile = Path.Combine(logFolder, "batch_executions.log");
                 File.AppendAllText(logFile, $"[{DateTime.Now}] Ejecutando batch: {batchFilePath}\r\n");
 
-                // Usar el método directo para ejecutar el batch (más confiable)
-                ProcessStartInfo startInfo = new ProcessStartInfo
+                // Usar método más simple que casi siempre funciona
+                try
                 {
-                    FileName = "cmd.exe",
-                    Arguments = $"/c \"{batchFilePath}\"",
-                    UseShellExecute = true,
-                    CreateNoWindow = false,  // Cambiado para ver el resultado en la consola
-                    WindowStyle = ProcessWindowStyle.Normal  // Cambiado a normal para ver el progreso
-                };
+                    ProcessStartInfo simpleStart = new ProcessStartInfo
+                    {
+                        FileName = batchFilePath,
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Normal
+                    };
 
-                using (Process process = Process.Start(startInfo))
+                    Process process = Process.Start(simpleStart);
+                    File.AppendAllText(logFile, $"[{DateTime.Now}] Batch iniciado directamente con PID: {(process != null ? process.Id : -1)}\r\n");
+
+                    // Crear un archivo marcador para confirmar que el batch se ha ejecutado
+                    string markerFile = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_executed.marker");
+                    File.WriteAllText(markerFile, $"Batch ejecutado: {DateTime.Now}");
+
+                    // Registrar en el sistema de logs
+                    WatcherLogger.LogActivity($"Batch MoverPDFs.bat ejecutado correctamente: {batchFilePath}");
+                    return;
+                }
+                catch (Exception ex)
                 {
-                    // Esperar brevemente para permitir que el proceso inicie
-                    Thread.Sleep(500);
-
-                    // Registrar el PID para diagnóstico
-                    File.AppendAllText(logFile, $"[{DateTime.Now}] Batch iniciado con PID: {(process != null ? process.Id : -1)}\r\n");
-
-                    // No esperamos a que termine para evitar bloqueos
+                    // Si el método simple falla, intentar con método alternativo
+                    File.AppendAllText(logFile, $"[{DateTime.Now}] Error al iniciar batch directamente: {ex.Message}. Intentando método alternativo...\r\n");
                 }
 
-                // Crear un archivo marcador para confirmar que el batch se ha ejecutado
-                string markerFile = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_executed.marker");
-                File.WriteAllText(markerFile, $"Batch ejecutado: {DateTime.Now}");
+                // Método alternativo usando cmd.exe explícitamente
+                try
+                {
+                    ProcessStartInfo cmdStart = new ProcessStartInfo
+                    {
+                        FileName = "cmd.exe",
+                        Arguments = $"/c start \"Monitor PDF\" \"{batchFilePath}\"",
+                        UseShellExecute = true,
+                        WindowStyle = ProcessWindowStyle.Normal
+                    };
 
-                // Registrar en el sistema de logs
-                WatcherLogger.LogActivity($"Batch MoverPDFs.bat ejecutado: {batchFilePath}");
+                    Process.Start(cmdStart);
+                    File.AppendAllText(logFile, $"[{DateTime.Now}] Batch iniciado con método alternativo\r\n");
+
+                    // Registrar en el sistema de logs
+                    WatcherLogger.LogActivity($"Batch MoverPDFs.bat ejecutado con método alternativo: {batchFilePath}");
+                }
+                catch (Exception cmdEx)
+                {
+                    // Registrar error detallado
+                    string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_error.log");
+                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al ejecutar batch (ambos métodos): {cmdEx.Message}\r\n{cmdEx.StackTrace}\r\n");
+
+                    // También registrar en el sistema de logs
+                    WatcherLogger.LogError("Error al ejecutar MoverPDFs.bat (todos los métodos fallaron)", cmdEx);
+                }
             }
             catch (Exception ex)
             {
                 // Registrar error detallado
                 string errorPath = Path.Combine(VirtualPrinterCore.FIXED_OUTPUT_PATH, "batch_error.log");
-                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al ejecutar batch: {ex.Message}\r\n{ex.StackTrace}\r\n");
+                File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al preparar ejecución de batch: {ex.Message}\r\n{ex.StackTrace}\r\n");
 
                 // También registrar en el sistema de logs
-                WatcherLogger.LogError("Error al ejecutar MoverPDFs.bat", ex);
-
-                // Intentar ejecutar como último recurso con el método más simple
-                try
-                {
-                    Process.Start(batchFilePath);
-                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Batch ejecutado con método alternativo\r\n");
-                }
-                catch
-                {
-                    // No podemos hacer nada más si ambos métodos fallan
-                }
+                WatcherLogger.LogError("Error al preparar ejecución de MoverPDFs.bat", ex);
             }
         }
 

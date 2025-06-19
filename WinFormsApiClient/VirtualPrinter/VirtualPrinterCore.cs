@@ -1481,16 +1481,15 @@ catch {{
         {
             try
             {
-                // Log inmediato de detección para diagnóstico
-                WatcherLogger.LogActivity($"Archivo PDF detectado: {e.FullPath}");
+                // Reducir logs - solo registrar detecciones significativas
+                Console.WriteLine($"PDF detectado: {Path.GetFileName(e.FullPath)}");
 
                 // Esperar más tiempo para asegurar que el archivo está completo
-                System.Threading.Thread.Sleep(3000); // Incrementado a 3 segundos
+                System.Threading.Thread.Sleep(2000);
 
                 // Verificar que el archivo exista
                 if (!File.Exists(e.FullPath))
                 {
-                    WatcherLogger.LogActivity($"El archivo ya no existe: {e.FullPath}");
                     return;
                 }
 
@@ -1498,20 +1497,18 @@ catch {{
                 var fileInfo = new FileInfo(e.FullPath);
                 if (fileInfo.Length == 0)
                 {
-                    WatcherLogger.LogActivity($"Archivo vacío detectado: {e.FullPath}");
                     return;
                 }
 
                 // Si el archivo está en uso, programar verificaciones periódicas
                 if (!FileMonitor.IsFileReady(e.FullPath))
                 {
-                    WatcherLogger.LogActivity($"Archivo en uso, programando verificación posterior: {e.FullPath}");
                     ScheduleFileCheck(e.FullPath);
                     return;
                 }
 
                 // Si llegamos aquí, el archivo está listo para procesarse
-                WatcherLogger.LogActivity($"Archivo PDF listo para procesamiento: {e.FullPath}");
+                WatcherLogger.LogActivity($"Archivo PDF listo: {Path.GetFileName(e.FullPath)}");
 
                 // Verificar si ya hay una instancia en ejecución
                 bool shouldLaunchApp = true;
@@ -1521,12 +1518,11 @@ catch {{
                     if (existingProcesses.Length > 1) // Si hay más de una instancia (contando la actual)
                     {
                         shouldLaunchApp = false;
-                        WatcherLogger.LogActivity("Ya existe una instancia de ECM Central en ejecución");
                     }
                 }
-                catch (Exception procEx)
+                catch (Exception)
                 {
-                    WatcherLogger.LogError("Error al buscar instancias existentes", procEx);
+                    // Ignorar errores de verificación de procesos
                 }
 
                 // Procesar el archivo
@@ -1539,11 +1535,9 @@ catch {{
                     try
                     {
                         WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(e.FullPath);
-                        WatcherLogger.LogActivity($"Enviado archivo a procesador: {e.FullPath}");
                     }
-                    catch (Exception procEx)
+                    catch (Exception)
                     {
-                        WatcherLogger.LogError("Error al procesar documento en instancia existente", procEx);
                         // Como alternativa, intentar lanzar la aplicación de todos modos
                         LaunchApplicationWithFile(e.FullPath);
                     }
@@ -1551,8 +1545,8 @@ catch {{
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al procesar nuevo archivo PDF: {ex.Message}");
-                WatcherLogger.LogError("Error al procesar archivo PDF creado por Bullzip", ex);
+                // Reducir verbosidad de logs
+                Console.WriteLine($"Error al procesar PDF: {ex.Message}");
 
                 // Intento de recuperación - intentar procesar el archivo de todos modos
                 try
@@ -1560,9 +1554,8 @@ catch {{
                     if (File.Exists(e.FullPath) && new FileInfo(e.FullPath).Length > 0)
                     {
                         // Esperar un poco más
-                        System.Threading.Thread.Sleep(5000);
+                        System.Threading.Thread.Sleep(3000);
                         LaunchApplicationWithFile(e.FullPath);
-                        WatcherLogger.LogActivity($"Recuperación: Archivo procesado tras error: {e.FullPath}");
                     }
                 }
                 catch { /* Ignorar errores en recuperación */ }
@@ -1604,9 +1597,9 @@ catch {{
                 _pendingFiles[filePath].Dispose();
             }
 
-            // Crear nuevo timer para verificar en 1 segundo
+            // Crear nuevo timer para verificar en 2 segundos
             System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-            timer.Interval = 1000;
+            timer.Interval = 2000;
             timer.Tick += (s, e) =>
             {
                 timer.Stop();
@@ -1618,19 +1611,20 @@ catch {{
                     var fileInfo = new FileInfo(filePath);
                     if (fileInfo.Length > 0 && FileMonitor.IsFileReady(filePath))
                     {
-                        WatcherLogger.LogActivity($"Archivo verificado y ahora listo: {filePath}");
+                        // Archivo listo para procesar - reducir logs
+                        Console.WriteLine($"PDF listo: {Path.GetFileName(filePath)}");
+
                         // Procesar el archivo
                         if (BackgroundMonitorService.IsActuallyRunning())
                         {
-                            // Notificar al procesador de documentos
                             try
                             {
                                 WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(filePath);
-                                WatcherLogger.LogActivity($"Enviado archivo a procesador: {filePath}");
                             }
-                            catch (Exception ex)
+                            catch (Exception)
                             {
-                                WatcherLogger.LogError("Error al procesar documento", ex);
+                                // Si falla, intentar lanzar la aplicación
+                                LaunchApplicationWithFile(filePath);
                             }
                         }
                         else
