@@ -90,102 +90,123 @@ namespace WinFormsApiClient
             bool isBackgroundMonitor = args.Contains("/backgroundmonitor");
 
             if (isBackgroundMonitor)
-{
-    bool createdNew = false;
-    monitorMutex = new Mutex(true, "Global\\ECMBackgroundMonitorMutex", out createdNew);
-    if (!createdNew)
-    {
-        Console.WriteLine("Ya existe una instancia del monitor ejecutándose.");
-        return;
-    }
-
-    // RESTAURAR: Usar FormInteraction.ShowTrayIcon con icono correcto
-    using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
-        "ECM Central - Monitor de impresión activo"))
-    {
-        // ASEGURAR que el icono se muestre correctamente
-        try
-        {
-            // Intentar cargar el icono de la aplicación
-            trayIcon.Icon = AppIcon.DefaultIcon ?? SystemIcons.Application;
-            trayIcon.Visible = true; // ASEGURAR que sea visible
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error al configurar icono: {ex.Message}");
-            trayIcon.Icon = SystemIcons.Application; // Fallback
-        }
-
-        // Configurar menú contextual del icono
-        ContextMenuStrip contextMenu = new ContextMenuStrip();
-        
-        // Opción para abrir la aplicación principal
-        ToolStripMenuItem openApp = new ToolStripMenuItem("Abrir ECM Central");
-        openApp.Click += (s, e) => {
-            try
             {
-                Process.Start(Application.ExecutablePath);
+                bool createdNew = false;
+                monitorMutex = new Mutex(true, "Global\\ECMBackgroundMonitorMutex", out createdNew);
+                if (!createdNew)
+                {
+                    Console.WriteLine("Ya existe una instancia del monitor ejecutándose.");
+                    return;
+                }
+
+                // Asegurar que se crea la carpeta de salida y los archivos necesarios
+                try
+                {
+                    // Crear la carpeta de salida si no existe
+                    if (!Directory.Exists(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH))
+                    {
+                        Directory.CreateDirectory(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH);
+                        Console.WriteLine($"Carpeta creada: {VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH}");
+                    }
+
+                    // Forzar la creación del archivo MoverPDFs.bat
+                    VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+                    Console.WriteLine("Archivo MoverPDFs.bat verificado/creado");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error al inicializar archivos: {ex.Message}");
+                }
+
+                // Crear icono en la bandeja del sistema
+                NotifyIcon trayIcon = new NotifyIcon();
+                
+                try
+                {
+                    // Intentar cargar el icono de la aplicación
+                    trayIcon.Icon = AppIcon.DefaultIcon ?? SystemIcons.Application;
+                    trayIcon.Text = "ECM Central - Monitor de impresión activo";
+                    trayIcon.Visible = true;
+                    Console.WriteLine("Icono de bandeja del sistema configurado correctamente");
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error al configurar icono: {ex.Message}");
+                    trayIcon.Icon = SystemIcons.Application; // Fallback
+                    trayIcon.Text = "ECM Central - Monitor activo";
+                    trayIcon.Visible = true;
+                }
+
+                // Configurar menú contextual del icono
+                ContextMenuStrip contextMenu = new ContextMenuStrip();
+                
+                // Opción para abrir la aplicación principal
+                ToolStripMenuItem openApp = new ToolStripMenuItem("Abrir ECM Central");
+                openApp.Click += (s, e) => {
+                    try
+                    {
+                        Process.Start(Application.ExecutablePath);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"Error al abrir aplicación: {ex.Message}", 
+                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                };
+                contextMenu.Items.Add(openApp);
+
+                // Separador
+                contextMenu.Items.Add(new ToolStripSeparator());
+
+                // Opción para detener el monitor
+                ToolStripMenuItem stopMonitor = new ToolStripMenuItem("Detener monitor");
+                stopMonitor.Click += (s, e) => {
+                    if (MessageBox.Show("¿Está seguro de que desea detener el monitor de impresión?", 
+                        "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    {
+                        BackgroundMonitorService.Stop();
+                        Application.Exit();
+                    }
+                };
+                contextMenu.Items.Add(stopMonitor);
+
+                // Asignar el menú al icono
+                trayIcon.ContextMenuStrip = contextMenu;
+
+                // Configurar doble clic para abrir la aplicación
+                trayIcon.DoubleClick += (s, e) => {
+                    try
+                    {
+                        Process.Start(Application.ExecutablePath);
+                    }
+                    catch { }
+                };
+
+                if (isSilentMode)
+                {
+                    WatcherLogger.LogActivity("Iniciando monitor en modo silencioso");
+                    BackgroundMonitorService.StartSilently();
+                }
+                else
+                {
+                    BackgroundMonitorService.Start();
+                }
+
+                Application.Run(); // Mantener vivo el proceso con icono en bandeja
+                
+                // Cleanup al salir
+                trayIcon.Visible = false;
+                trayIcon.Dispose();
+                return;
             }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"Error al abrir aplicación: {ex.Message}", 
-                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        };
-        contextMenu.Items.Add(openApp);
-
-        // Separador
-        contextMenu.Items.Add(new ToolStripSeparator());
-
-        // Opción para detener el monitor
-        ToolStripMenuItem stopMonitor = new ToolStripMenuItem("Detener monitor");
-        stopMonitor.Click += (s, e) => {
-            if (MessageBox.Show("¿Está seguro de que desea detener el monitor de impresión?", 
-                "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-            {
-                BackgroundMonitorService.Stop();
-                Application.Exit();
-            }
-        };
-        contextMenu.Items.Add(stopMonitor);
-
-        // Asignar el menú al icono
-        trayIcon.ContextMenuStrip = contextMenu;
-
-        // Configurar doble clic para abrir la aplicación
-        trayIcon.DoubleClick += (s, e) => {
-            try
-            {
-                Process.Start(Application.ExecutablePath);
-            }
-            catch { }
-        };
-
-        if (isSilentMode)
-        {
-            WatcherLogger.LogActivity("Iniciando monitor en modo silencioso");
-            BackgroundMonitorService.StartSilently();
-        }
-        else
-        {
-            BackgroundMonitorService.Start();
-        }
-
-        Application.Run(); // Mantener vivo el proceso con icono en bandeja
-    }
-    
-    return;
-}
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             // Configurar mecanismo de recuperación para evitar congelaciones
             ConfigureApplicationRecovery();
             
-            
             // Modo normal de la aplicación
             Application.Run(new LoginForm());
-            
         }
 
         private static void ConfigureApplicationRecovery()
@@ -694,7 +715,7 @@ if ($task -eq $null) {{
             File.AppendAllText(
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "cmd_args.log"),
                 $"[{DateTime.Now}] Procesando argumento: {argument}\r\n");
-            
+
             if (argument.StartsWith("/processfile="))
             {
                 // Extraer la ruta del archivo
@@ -1023,332 +1044,197 @@ if ($task -eq $null) {{
             }
             else if (argument == "/install-autostart")
             {
-                // Instalar el servicio de monitoreo para que se inicie con Windows
-                Console.WriteLine("Instalando servicio de monitoreo para inicio automático");
+                Console.WriteLine("Instalando autostart y configurando sistema completo...");
 
-                // Verificar si ya está instalado
-                bool alreadyInstalled = WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.IsInstalledForAutostart();
+                // 1. Instalar autostart normal
+                bool success = BackgroundMonitorService.InstallAutostart();
+                bool alreadyInstalled = BackgroundMonitorService.IsInstalledForAutostart();
 
                 if (alreadyInstalled)
                 {
-                    Console.WriteLine("El servicio ya está instalado, verificando impresora...");
-                    // Solo verificar la impresora y reiniciar el servicio
+                    Console.WriteLine("Autostart ya instalado, verificando configuración completa...");
+
+                    // AQUÍ ES DONDE FALTA - FORZAR LA CONFIGURACIÓN COMPLETA
+                    ForceCompleteSystemConfiguration();
+
                     if (!ECMVirtualPrinter.IsPrinterInstalled())
                     {
-                        Console.WriteLine("Impresora no instalada, iniciando instalación...");
-                        ECMVirtualPrinter.InstallPrinterAsync(true).Wait();
+                        Console.WriteLine("Impresora no detectada, iniciando instalación...");
+                        Task.Run(async () => await PrinterInstaller.InstallPrinterAsync(true)).Wait();
                     }
-
-                    MessageBox.Show(
-                        "El servicio de monitoreo ya está instalado y configurado para iniciarse con Windows.",
-                        "Servicio activo",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                    // Reiniciar el servicio
-                    //Process.Start(Application.ExecutablePath, "/backgroundmonitor");
-                    return;
                 }
-
-                bool success = VirtualPrinter.PrinterInstaller.InstallBackgroundMonitor(autoStart: false);
 
                 if (success)
                 {
-                    MessageBox.Show(
-                        "El servicio de monitoreo de impresión se ha instalado correctamente y se iniciará automáticamente con Windows.",
-                        "Instalación completa",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Console.WriteLine("Autostart instalado/verificado correctamente");
+                    MessageBox.Show("El monitor se iniciará automáticamente con Windows.", "Autostart configurado", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else
                 {
-                    MessageBox.Show(
-                        "No se pudo instalar el servicio de monitoreo. Por favor, inténtelo de nuevo con permisos de administrador.",
-                        "Error de instalación",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Console.WriteLine("Error instalando autostart");
+                    MessageBox.Show("Error al configurar el autostart", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
                 return;
             }
-
-            else if (argument == "/uninstall-autostart")
+            else if (argument == "/diagnose-bullzip")
             {
-                // Desinstalar el servicio de autoarranque
-                Console.WriteLine("Desinstalando servicio de monitoreo del inicio automático");
-                bool success = WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.UninstallAutostart();
+                Console.WriteLine("=== DIAGNÓSTICO DE BULLZIP ===");
 
-                if (success)
+                // Verificar si Bullzip está instalado
+                bool bullzipExists = false;
+                foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
                 {
-                    MessageBox.Show(
-                        "El servicio de monitoreo se ha eliminado del inicio automático.",
-                        "Desinstalación completa",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
+                    {
+                        Console.WriteLine($"Bullzip encontrado: {printer}");
+                        bullzipExists = true;
+                    }
                 }
-                else
+
+                if (!bullzipExists)
                 {
-                    MessageBox.Show(
-                        "No se pudo desinstalar el servicio de monitoreo. Por favor, inténtelo de nuevo con permisos de administrador.",
-                        "Error de desinstalación",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Console.WriteLine("PROBLEMA: Bullzip NO está instalado");
+                    Console.WriteLine("Ejecutando instalación...");
+                    bool result = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
+                    Console.WriteLine($"Resultado instalación: {result}");
                 }
+
+                // Verificar archivos necesarios
+                string batchPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "MoverPDFs.bat");
+                Console.WriteLine($"MoverPDFs.bat existe: {File.Exists(batchPath)}");
+
+                if (!File.Exists(batchPath))
+                {
+                    Console.WriteLine("Creando MoverPDFs.bat...");
+                    VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+                    Console.WriteLine($"Creado: {File.Exists(batchPath)}");
+                }
+
+                // Verificar configuración
+                string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bullzip", "PDF Printer", "settings.ini");
+                Console.WriteLine($"Configuración Bullzip existe: {File.Exists(configPath)}");
+
+                Console.WriteLine("=== FIN DIAGNÓSTICO ===");
                 return;
             }
-            else if (argument == "/status")
+            else if (argument == "/force-bullzip-setup")
             {
-                // Mostrar estado actual del sistema de impresión
-                Console.WriteLine("Verificando estado del sistema de impresión");
-
-                // Realizar diagnóstico
-                WinFormsApiClient.VirtualWatcher.WatcherLogger.LogSystemDiagnostic();
-
-                // Verificar si la impresora está instalada
-                bool printerInstalled = ECMVirtualPrinter.IsPrinterInstalled();
-
-                // Verificar si el servicio está instalado para autoarranque
-                bool serviceInstalled = WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.IsInstalledForAutostart();
-
-                // Mostrar mensaje de estado
-                MessageBox.Show(
-                    $"Estado del sistema de impresión ECM Central:\n\n" +
-                    $"- Impresora instalada: {(printerInstalled ? "Sí" : "No")}\n" +
-                    $"- Servicio de monitoreo en inicio automático: {(serviceInstalled ? "Sí" : "No")}\n\n" +
-                    "Se ha generado un diagnóstico completo en los archivos de log.",
-                    "Estado del sistema",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                return; // Este return es crucial - si falta, seguirá ejecutando la aplicación
+                ForceCompleteBullzipSetup();
+                return;
             }
-            else
+        } // Cierre del método ProcessCommandLineArguments
+        private static void ForceCompleteBullzipSetup()
+{
+    try
+    {
+        Console.WriteLine("=== FORZANDO CONFIGURACIÓN COMPLETA DE BULLZIP ===");
+        
+        // 1. Verificar si Bullzip está instalado
+        bool bullzipExists = false;
+        foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
+        {
+            if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
             {
-                Console.WriteLine("Argumento no reconocido, iniciando aplicación normalmente");
-                // Si no es un comando reconocido, iniciar normal
-                Application.Run(new LoginForm());
+                bullzipExists = true;
+                Console.WriteLine($"Bullzip encontrado: {printer}");
+                break;
             }
         }
-
-        /// <summary>
-        /// Inicia el monitor de impresora en segundo plano
-        /// </summary>
-        private static void StartPrinterWatcher()
+        
+        // 2. Si no existe, intentar instalarlo
+        if (!bullzipExists)
+        {
+            Console.WriteLine("Bullzip no encontrado, ejecutando instalación...");
+            
+            // Método 1: Usar ForceBullzipSetup
+            bool setupResult = VirtualPrinter.PDFDialogAutomation.ForceBullzipSetup();
+            Console.WriteLine($"Resultado ForceBullzipSetup: {setupResult}");
+            
+            // Método 2: Usar InitBullzipAtStartup
+            bool initResult = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
+            Console.WriteLine($"Resultado InitBullzipAtStartup: {initResult}");
+        }
+        
+        // 3. Configurar Bullzip existente
+        bool configResult = VirtualPrinter.VirtualPrinterCore.ConfigureBullzipPrinter();
+        Console.WriteLine($"Resultado configuración: {configResult}");
+        
+        // 4. Crear archivos batch
+        VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+        Console.WriteLine("MoverPDFs.bat creado");
+        
+        // 5. Configurar monitor para Bullzip
+        bool monitorResult = VirtualPrinter.VirtualPrinterCore.EnsureMonitorForBullzip();
+        Console.WriteLine($"Resultado monitor Bullzip: {monitorResult}");
+        
+        Console.WriteLine("=== CONFIGURACIÓN COMPLETA FINALIZADA ===");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en configuración completa: {ex.Message}");
+    }
+}
+        // AGREGAR EL MÉTODO DENTRO DE LA CLASE Program
+        private static void ForceCompleteSystemConfiguration()
         {
             try
             {
-                // Configurar la carpeta de salida de la impresora
-                ConfigurePrinterOutputFolder();
-
-                // Iniciar el watcher en un hilo separado
-                System.Threading.ThreadPool.QueueUserWorkItem(state =>
-                {
-                    try
-                    {
-                        PrinterWatcher.Instance.StartWatching();
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error al iniciar PrinterWatcher: {ex.Message}");
-                    }
-                });
+                Console.WriteLine("=== INICIANDO CONFIGURACIÓN COMPLETA DEL SISTEMA ===");
+                
+                // 1. Forzar inicialización de Bullzip (método existente)
+                Console.WriteLine("1. Verificando e instalando Bullzip...");
+                bool bullzipResult = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
+                Console.WriteLine($"   Resultado Bullzip: {bullzipResult}");
+                
+                // 2. Configurar Bullzip (método existente)
+                Console.WriteLine("2. Configurando Bullzip...");
+                bool configResult = VirtualPrinter.VirtualPrinterCore.ConfigureBullzipPrinter();
+                Console.WriteLine($"   Resultado configuración: {configResult}");
+                
+                // 3. Crear archivo batch (método existente)
+                Console.WriteLine("3. Creando MoverPDFs.bat...");
+                VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+                Console.WriteLine("   MoverPDFs.bat creado");
+                
+                // 4. Asegurar carpeta de salida
+                Console.WriteLine("4. Verificando carpeta de salida...");
+                VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
+                Console.WriteLine("   Carpeta verificada");
+                
+                // 5. Forzar configuración del monitor para Bullzip
+                Console.WriteLine("5. Configurando monitor para Bullzip...");
+                bool monitorResult = VirtualPrinter.VirtualPrinterCore.EnsureMonitorForBullzip();
+                Console.WriteLine($"   Resultado monitor: {monitorResult}");
+                
+                Console.WriteLine("=== CONFIGURACIÓN COMPLETA FINALIZADA ===");
+                
+                // Crear archivo de estado para verificar que se ejecutó
+                string statusFile = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "system_configured.marker");
+                File.WriteAllText(statusFile, $"Sistema configurado completamente el {DateTime.Now}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al crear el PrinterWatcher: {ex.Message}");
+                Console.WriteLine($"Error en configuración completa: {ex.Message}");
             }
         }
 
-        /// <summary>
-        /// Asegura que la carpeta de imágenes exista y contiene los archivos necesarios
-        /// </summary>
-        private static void EnsureImagesFolder()
-        {
-            try
-            {
-                // Crear la carpeta de imágenes si no existe
-                string imagesFolder = Path.Combine(Application.StartupPath, "images");
-                if (!Directory.Exists(imagesFolder))
-                {
-                    Directory.CreateDirectory(imagesFolder);
-                    Console.WriteLine($"Carpeta de imágenes creada: {imagesFolder}");
-                }
-
-                CopyImageIfMissing(imagesFolder, "ecmicon.ico", true);
-                CopyImageIfMissing(imagesFolder, "ecmlogofm.png", true);
-                CopyImageIfMissing(imagesFolder, "illustration.png", false);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al configurar la carpeta de imágenes: {ex.Message}");
-                // Continuamos con la ejecución aunque falle
-            }
-        }
-
-        /// <summary>
-        /// Copia un archivo de imagen si no existe en la carpeta de destino
-        /// </summary>
-        private static void CopyImageIfMissing(string folder, string filename, bool required)
-        {
-            try
-            {
-                string targetPath = Path.Combine(folder, filename);
-                if (!File.Exists(targetPath))
-                {
-                    // Buscar el archivo en varias posibles ubicaciones
-                    string[] possibleSourcePaths = {
-                Path.Combine(Application.StartupPath, filename),
-                Path.Combine(AppDomain.CurrentDomain.BaseDirectory, filename),
-                Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), filename),
-                Path.Combine(Path.GetDirectoryName(Application.ExecutablePath), "images", filename)
-            };
-
-                    bool copied = false;
-                    foreach (string sourcePath in possibleSourcePaths)
-                    {
-                        if (File.Exists(sourcePath))
-                        {
-                            try
-                            {
-                                // Intentar copiar el archivo usando un método que evita bloqueos
-                                using (FileStream source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read))
-                                using (FileStream destination = new FileStream(targetPath, FileMode.Create, FileAccess.Write, FileShare.None))
-                                {
-                                    byte[] buffer = new byte[4096];
-                                    int bytesRead;
-                                    while ((bytesRead = source.Read(buffer, 0, buffer.Length)) > 0)
-                                    {
-                                        destination.Write(buffer, 0, bytesRead);
-                                    }
-                                }
-
-                                Console.WriteLine($"Archivo {filename} copiado de {sourcePath} a {targetPath}");
-                                copied = true;
-                                break;
-                            }
-                            catch (IOException ex)
-                            {
-                                Console.WriteLine($"No se pudo copiar {filename}: {ex.Message}");
-                            }
-                        }
-                    }
-
-                    if (!copied && required)
-                    {
-                        Console.WriteLine($"ADVERTENCIA: No se pudo encontrar o copiar {filename}");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al copiar {filename}: {ex.Message}");
-            }
-        }
-
+        // AGREGAR EL MÉTODO ConfigurePrinterOutputFolder QUE FALTA
         private static void ConfigurePrinterOutputFolder()
         {
             try
             {
-                // Asegurar que la carpeta existe
+                // Asegurar que existe la carpeta de salida
                 VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
-
-                string outputFolder = VirtualPrinter.VirtualPrinterCore.GetOutputFolderPath();
-                Console.WriteLine($"Configurando impresora para usar carpeta: {outputFolder}");
-
-                // Si estamos usando Microsoft Print to PDF, iniciar la automatización del diálogo
-                if (VirtualPrinter.VirtualPrinterCore.DRIVER_NAME == "Microsoft Print To PDF")
-                {
-                    // Solo verificar que el directorio existe
-                    if (!Directory.Exists(outputFolder))
-                    {
-                        Directory.CreateDirectory(outputFolder);
-                        Console.WriteLine($"Carpeta de salida creada: {outputFolder}");
-                    }
-
-                    // Verificar si ya hay una instancia del script ejecutándose
-                    string scriptName = Path.GetFileNameWithoutExtension(PDFDialogAutomation.AutoITCompiledPath);
-                    Process[] processes = Process.GetProcessesByName(scriptName);
-
-                    if (processes.Length > 0)
-                    {
-                        Console.WriteLine($"La automatización de diálogo ya está activa (PID: {processes[0].Id})");
-                    }
-                    else
-                    {
-                        // Intentar iniciar la automatización de diálogo
-                        try
-                        {
-                            bool automated = PDFDialogAutomation.StartDialogAutomation();
-                            Console.WriteLine($"Automatización de diálogo inicializada: {(automated ? "Exitosa" : "Fallida")}");
-                        }
-                        catch (Exception ex)
-                        {
-                            Console.WriteLine($"Error al iniciar automatización de diálogo: {ex.Message}");
-
-                            // Intentar completar la operación sin bloquear la aplicación
-                            System.Threading.ThreadPool.QueueUserWorkItem(state =>
-                            {
-                                try
-                                {
-                                    // Asegurar que exista la carpeta de destino
-                                    VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
-
-                                    // Como último recurso, crear un archivo batch que lance la aplicación AutoIt3
-                                    string batchFilePath = Path.Combine(Path.GetTempPath(), "ECMCentralAutoIT", "StartAutomation.bat");
-                                    string scriptPath = Path.Combine(Path.GetTempPath(), "ECMCentralAutoIT", "PDFSaveDialogAutomation.au3");
-
-                                    if (File.Exists(scriptPath))
-                                    {
-                                        string batchContent = @"@echo off
-echo Iniciando automatizacion de dialogos PDF...
-if exist ""C:\Program Files\AutoIt3\AutoIt3.exe"" (
-    ""C:\Program Files\AutoIt3\AutoIt3.exe"" """ + scriptPath + @"""
-) else if exist ""C:\Program Files (x86)\AutoIt3\AutoIt3.exe"" (
-    ""C:\Program Files (x86)\AutoIt3\AutoIt3.exe"" """ + scriptPath + @"""
-) else (
-    echo AutoIt3.exe no encontrado
-)";
-                                        File.WriteAllText(batchFilePath, batchContent);
-
-                                        // Ejecutar el batch silenciosamente
-                                        ProcessStartInfo startInfo = new ProcessStartInfo
-                                        {
-                                            FileName = batchFilePath,
-                                            CreateNoWindow = true,
-                                            UseShellExecute = false
-                                        };
-                                        Process.Start(startInfo);
-                                    }
-                                }
-                                catch (Exception batchEx)
-                                {
-                                    Console.WriteLine($"Error al crear script batch: {batchEx.Message}");
-                                }
-                            });
-                        }
-                    }
-                }
-                else
-                {
-                    // Configurar la impresora si no es Microsoft Print to PDF
-                    if (VirtualPrinter.VirtualPrinterCore.IsPrinterInstalled())
-                    {
-                        string psCommand = $@"
-                try {{
-                    $printer = Get-Printer -Name '{VirtualPrinter.VirtualPrinterCore.PRINTER_NAME}' -ErrorAction SilentlyContinue
-                    if ($printer) {{
-                        $outputPath = '{outputFolder.Replace("\\", "\\\\")}'
-                        Set-PrintConfiguration -PrinterName '{VirtualPrinter.VirtualPrinterCore.PRINTER_NAME}' -PrintTicketXML '<PrintTicket xmlns=""http://schemas.microsoft.com/windows/2003/08/printing/printticket""><ParameterInit name=""FileNameSettings""><StringParameter name=""DocumentNameExtension"">.pdf</StringParameter><StringParameter name=""Directory"">' + $outputPath + '</StringParameter></ParameterInit></PrintTicket>' -ErrorAction SilentlyContinue
-                        Write-Output ""Impresora configurada correctamente para usar carpeta: $outputPath""
-                    }} else {{
-                        Write-Output ""La impresora no existe, no se puede configurar la carpeta de salida""
-                    }}
-                }} catch {{
-                    Write-Output ""Error al configurar carpeta de salida: $($_.Exception.Message)""
-                }}
-            ";
-                        VirtualPrinter.PowerShellHelper.RunPowerShellCommand(psCommand);
-                    }
-                }
+                
+                // Crear el archivo batch si no existe
+                VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+                
+                Console.WriteLine("Carpeta de salida de impresora configurada correctamente");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al configurar carpeta de salida en impresora: {ex.Message}");
+                Console.WriteLine($"Error al configurar carpeta de salida: {ex.Message}");
             }
         }
-
-    }
-}
+    } // Cierre de la clase Program
+} // Cierre del namespace

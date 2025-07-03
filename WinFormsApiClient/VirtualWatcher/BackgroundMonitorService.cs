@@ -149,6 +149,13 @@ namespace WinFormsApiClient.VirtualWatcher
                 // Registrar diagnóstico completo del sistema
                 WatcherLogger.LogSystemDiagnostic();
 
+                // DESPUÉS DE VERIFICAR QUE NO HAY INSTANCIAS ACTIVAS
+                // AGREGAR ESTA LLAMADA:
+                
+                // CONFIGURACIÓN COMPLETA AL INICIAR EL MONITOR
+                Console.WriteLine("Ejecutando configuración automática del sistema...");
+                ForceSystemAutoConfiguration();
+                
                 return true;
             }
             catch (Exception ex)
@@ -807,6 +814,50 @@ try {
             catch (Exception ex)
             {
                 WatcherLogger.LogError("Error al iniciar servicio de monitoreo en modo silencioso", ex);
+            }
+        }
+
+        // NUEVO MÉTODO EN BackgroundMonitorService
+        private static void ForceSystemAutoConfiguration()
+        {
+            try
+            {
+                // Solo ejecutar si no se ha configurado recientemente
+                string statusFile = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "system_configured.marker");
+                
+                if (File.Exists(statusFile))
+                {
+                    DateTime lastConfig = File.GetLastWriteTime(statusFile);
+                    if ((DateTime.Now - lastConfig).TotalHours < 24)
+                    {
+                        Console.WriteLine("Sistema configurado recientemente, omitiendo...");
+                        return;
+                    }
+                }
+                
+                Console.WriteLine("Ejecutando configuración automática...");
+                
+                // 1. Verificar e instalar Bullzip
+                bool bullzipInit = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
+                
+                // 2. Configurar Bullzip si se instaló o ya existe
+                if (bullzipInit)
+                {
+                    VirtualPrinter.VirtualPrinterCore.ConfigureBullzipPrinter();
+                    VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
+                }
+                
+                // 3. Asegurar carpetas y permisos
+                VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
+                
+                // Marcar como configurado
+                File.WriteAllText(statusFile, $"Configuración automática ejecutada: {DateTime.Now}");
+                
+                Console.WriteLine("Configuración automática completada");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en configuración automática: {ex.Message}");
             }
         }
     }
