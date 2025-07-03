@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.IO;
 using System.Linq;
 using System.Management;
@@ -14,6 +15,8 @@ namespace WinFormsApiClient
 {
     static class Program
     {
+        static Mutex monitorMutex;
+
         /// <summary>
         /// Punto de entrada principal para la aplicación.
         /// </summary>
@@ -66,87 +69,125 @@ namespace WinFormsApiClient
             };
             Application.ThreadException += (s, e) =>
                 WatcherLogger.LogError("Excepción no controlada en hilo de UI", e.Exception);
+            if (args.Length > 0)
+            {
+                foreach (string arg in args)
+                {
+                    // Si detectamos que se está intentando ejecutar un batch, hacerlo silenciosamente
+                    if (arg.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
+                    {
+                        // Ejecutar silenciosamente en lugar de mostrar ventana
+                        //VirtualPrinter.VirtualPrinterCore.RunBatchSilently(arg);
+                        return; // Salir sin mostrar ventana
+                    }
+                }
 
+                ProcessCommandLineArguments(args);
+                return;
+            }
             // Procesar argumentos
             bool isSilentMode = args.Contains("/silent");
             bool isBackgroundMonitor = args.Contains("/backgroundmonitor");
 
-            // Verificar que no haya ya una instancia del mismo tipo en ejecución
-            if (isBackgroundMonitor && PreventMultipleBackgroundInstances())
+            if (isBackgroundMonitor)
+{
+    bool createdNew = false;
+    monitorMutex = new Mutex(true, "Global\\ECMBackgroundMonitorMutex", out createdNew);
+    if (!createdNew)
+    {
+        Console.WriteLine("Ya existe una instancia del monitor ejecutándose.");
+        return;
+    }
+
+    // RESTAURAR: Usar FormInteraction.ShowTrayIcon con icono correcto
+    using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
+        "ECM Central - Monitor de impresión activo"))
+    {
+        // ASEGURAR que el icono se muestre correctamente
+        try
+        {
+            // Intentar cargar el icono de la aplicación
+            trayIcon.Icon = AppIcon.DefaultIcon ?? SystemIcons.Application;
+            trayIcon.Visible = true; // ASEGURAR que sea visible
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error al configurar icono: {ex.Message}");
+            trayIcon.Icon = SystemIcons.Application; // Fallback
+        }
+
+        // Configurar menú contextual del icono
+        ContextMenuStrip contextMenu = new ContextMenuStrip();
+        
+        // Opción para abrir la aplicación principal
+        ToolStripMenuItem openApp = new ToolStripMenuItem("Abrir ECM Central");
+        openApp.Click += (s, e) => {
+            try
             {
-                // Ya hay una instancia, salir silenciosamente
-                return;
+                Process.Start(Application.ExecutablePath);
             }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error al abrir aplicación: {ex.Message}", 
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        };
+        contextMenu.Items.Add(openApp);
+
+        // Separador
+        contextMenu.Items.Add(new ToolStripSeparator());
+
+        // Opción para detener el monitor
+        ToolStripMenuItem stopMonitor = new ToolStripMenuItem("Detener monitor");
+        stopMonitor.Click += (s, e) => {
+            if (MessageBox.Show("¿Está seguro de que desea detener el monitor de impresión?", 
+                "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            {
+                BackgroundMonitorService.Stop();
+                Application.Exit();
+            }
+        };
+        contextMenu.Items.Add(stopMonitor);
+
+        // Asignar el menú al icono
+        trayIcon.ContextMenuStrip = contextMenu;
+
+        // Configurar doble clic para abrir la aplicación
+        trayIcon.DoubleClick += (s, e) => {
+            try
+            {
+                Process.Start(Application.ExecutablePath);
+            }
+            catch { }
+        };
+
+        if (isSilentMode)
+        {
+            WatcherLogger.LogActivity("Iniciando monitor en modo silencioso");
+            BackgroundMonitorService.StartSilently();
+        }
+        else
+        {
+            BackgroundMonitorService.Start();
+        }
+
+        Application.Run(); // Mantener vivo el proceso con icono en bandeja
+    }
+    
+    return;
+}
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             // Configurar mecanismo de recuperación para evitar congelaciones
             ConfigureApplicationRecovery();
-            // Configurar inicio automático con Windows
-            EnsureBackgroundMonitorStartsWithWindows();
             
-            // Procesar los argumentos
-            if (isBackgroundMonitor)
-            {
-                // Modo monitor en segundo plano
-                if (isSilentMode)
-                {
-                    // Modo silencioso con icono en el área de notificación
-                    // Iniciar el monitor
-                    WatcherLogger.LogActivity("Iniciando monitor en modo silencioso");
-                    BackgroundMonitorService.Start();
-
-                    // Crear un formulario invisible para mantener la aplicación en ejecución
-                    Form invisibleForm = new Form
-                    {
-                        WindowState = FormWindowState.Minimized,
-                        ShowInTaskbar = false,
-                        FormBorderStyle = FormBorderStyle.None,
-                        Size = new System.Drawing.Size(1, 1),
-                        Opacity = 0
-                    };
-
-                    // Asegurarse que no se muestre ni siquiera por un momento
-                    invisibleForm.Load += (sender, e) => invisibleForm.Hide();
-
-                    // Añadir ícono en la bandeja del sistema
-                    using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
-                        "ECM Central - Monitor de impresión"))
-                    {
-                        // Mantener la aplicación en ejecución
-                        Application.Run(invisibleForm);
-                    }
-                }
-                else
-                {
-                    // Modo normal (consola visible)
-                    Console.WriteLine("INICIO DE MONITOR DE FONDO (modo sincronización)");
-                    BackgroundMonitorService.StartAndNotify();
-
-                    // Crear un formulario invisible para mantener la aplicación en ejecución
-                    Form invisibleForm = new Form
-                    {
-                        WindowState = FormWindowState.Minimized,
-                        ShowInTaskbar = false,
-                        FormBorderStyle = FormBorderStyle.None,
-                        Opacity = 0
-                    };
-                    invisibleForm.Load += (sender, e) => invisibleForm.Hide();
-
-                    // Crear icono en bandeja del sistema
-                    using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
-                        "Monitor ECM Central - Modo sincronización"))
-                    {
-                        Application.Run(invisibleForm);
-                    }
-                }
-            }
-            else
-            {
-                // Modo normal de la aplicación
-                Application.Run(new LoginForm());
-            }
+            
+            // Modo normal de la aplicación
+            Application.Run(new LoginForm());
+            
         }
+
         private static void ConfigureApplicationRecovery()
         {
             try
@@ -653,7 +694,7 @@ if ($task -eq $null) {{
             File.AppendAllText(
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "cmd_args.log"),
                 $"[{DateTime.Now}] Procesando argumento: {argument}\r\n");
-
+            
             if (argument.StartsWith("/processfile="))
             {
                 // Extraer la ruta del archivo
@@ -756,137 +797,137 @@ if ($task -eq $null) {{
             //    ECMVirtualPrinter.InstallScannerDriverAsync().Wait();
             //    return; // Salir después de instalar
             //}
-            else if (argument == "/backgroundmonitor")
-            {
-                // Verificar flags adicionales
-                bool silentMode = args.Any(a => a.ToLower() == "/silent");
-                bool lowImpactMode = args.Any(a => a.ToLower() == "/lowimpact");
-                bool synchronizedMode = args.Any(a => a.ToLower() == "/waitforsync"); // Añadir esta línea
+            // else if (argument == "/backgroundmonitor")
+            // {
+            //     // Verificar flags adicionales
+            //     bool silentMode = args.Any(a => a.ToLower() == "/silent");
+            //     bool lowImpactMode = args.Any(a => a.ToLower() == "/lowimpact");
+            //     bool synchronizedMode = args.Any(a => a.ToLower() == "/waitforsync"); // Añadir esta línea
 
-                Console.WriteLine("Iniciando modo de monitor en segundo plano" +
-                    (silentMode ? " silenciosamente" : "") +
-                    (lowImpactMode ? " (impacto reducido)" : "") +
-                    (synchronizedMode ? " (modo sincronización)" : ""));
+            //     Console.WriteLine("Iniciando modo de monitor en segundo plano" +
+            //         (silentMode ? " silenciosamente" : "") +
+            //         (lowImpactMode ? " (impacto reducido)" : "") +
+            //         (synchronizedMode ? " (modo sincronización)" : ""));
 
-                // En modo de bajo impacto, limitamos la frecuencia de log
-                if (lowImpactMode)
-                {
-                    WatcherLogger.SetLoggingInterval(TimeSpan.FromMinutes(30));
-                }
+            //     // En modo de bajo impacto, limitamos la frecuencia de log
+            //     if (lowImpactMode)
+            //     {
+            //         WatcherLogger.SetLoggingInterval(TimeSpan.FromMinutes(30));
+            //     }
 
-                // Registrar en init_log.txt
-                string initLogPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.GetLogFolderPath(), "init_log.txt");
-                File.AppendAllText(initLogPath,
-                    $"[{DateTime.Now}] INICIO DE MONITOR DE FONDO" +
-                    (synchronizedMode ? " (modo sincronización)" : "") +
-                    (silentMode ? " (modo silencioso)" : "") + "\r\n");
+            //     // Registrar en init_log.txt
+            //     string initLogPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.GetLogFolderPath(), "init_log.txt");
+            //     File.AppendAllText(initLogPath,
+            //         $"[{DateTime.Now}] INICIO DE MONITOR DE FONDO" +
+            //         (synchronizedMode ? " (modo sincronización)" : "") +
+            //         (silentMode ? " (modo silencioso)" : "") + "\r\n");
 
-                // Crear inmediatamente el archivo de marcador
-                string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
-                File.WriteAllText(markerFilePath, Process.GetCurrentProcess().Id.ToString());
+            //     // Crear inmediatamente el archivo de marcador
+            //     string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
+            //     File.WriteAllText(markerFilePath, Process.GetCurrentProcess().Id.ToString());
 
-                // Registrar eliminación del archivo al cerrar
-                AppDomain.CurrentDomain.ProcessExit += (s, e) => {
-                    try { if (File.Exists(markerFilePath)) File.Delete(markerFilePath); } catch { }
-                };
+            //     // Registrar eliminación del archivo al cerrar
+            //     AppDomain.CurrentDomain.ProcessExit += (s, e) => {
+            //         try { if (File.Exists(markerFilePath)) File.Delete(markerFilePath); } catch { }
+            //     };
 
-                WatcherLogger.LogActivity("Iniciando modo de monitor en segundo plano" +
-                    (silentMode ? " silenciosamente" : "") +
-                    (synchronizedMode ? " con sincronización" : ""));
+            //     WatcherLogger.LogActivity("Iniciando modo de monitor en segundo plano" +
+            //         (silentMode ? " silenciosamente" : "") +
+            //         (synchronizedMode ? " con sincronización" : ""));
 
-                try
-                {
-                    // Configurar la carpeta de salida de la impresora
-                    ConfigurePrinterOutputFolder();
+            //     try
+            //     {
+            //         // Configurar la carpeta de salida de la impresora
+            //         ConfigurePrinterOutputFolder();
 
-                    // Iniciar el servicio de monitoreo - MODIFICADO PARA SINCRONIZACIÓN
-                    if (synchronizedMode)
-                    {
-                        WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.StartAndNotify();
-                    }
-                    else
-                    {
-                        WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Start();
-                    }
+            //         // Iniciar el servicio de monitoreo - MODIFICADO PARA SINCRONIZACIÓN
+            //         if (synchronizedMode)
+            //         {
+            //             WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.StartAndNotify();
+            //         }
+            //         else
+            //         {
+            //             WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Start();
+            //         }
 
-                    // En modo silencioso, evitar mostrar ventanas
-                    if (silentMode)
-                    {
-                        // Crear un formulario invisible para mantener la aplicación en ejecución
-                        Form invisibleForm = new Form
-                        {
-                            WindowState = FormWindowState.Minimized,
-                            ShowInTaskbar = false,
-                            FormBorderStyle = FormBorderStyle.None,
-                            Size = new System.Drawing.Size(1, 1),
-                            Opacity = 0
-                        };
+            //         // En modo silencioso, evitar mostrar ventanas
+            //         if (silentMode)
+            //         {
+            //             // Crear un formulario invisible para mantener la aplicación en ejecución
+            //             Form invisibleForm = new Form
+            //             {
+            //                 WindowState = FormWindowState.Minimized,
+            //                 ShowInTaskbar = false,
+            //                 FormBorderStyle = FormBorderStyle.None,
+            //                 Size = new System.Drawing.Size(1, 1),
+            //                 Opacity = 0
+            //             };
 
-                        // Asegurarse que no se muestre ni siquiera por un momento
-                        invisibleForm.Load += (sender, e) => invisibleForm.Hide();
+            //             // Asegurarse que no se muestre ni siquiera por un momento
+            //             invisibleForm.Load += (sender, e) => invisibleForm.Hide();
 
-                        // Usar el método existente para mostrar el ícono en la bandeja del sistema
-                        using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
-                            "ECM Central - Monitor de impresión"))
-                        {
-                            // Mantener la aplicación en ejecución
-                            Application.Run(invisibleForm);
-                        }
-                    }
-                    else
-                    {
-                        // Modo normal con interfaz de usuario
-                        // Crear un formulario invisible para mantener la aplicación en ejecución
-                        using (Form invisibleForm = new Form())
-                        {
-                            invisibleForm.WindowState = FormWindowState.Minimized;
-                            invisibleForm.ShowInTaskbar = false;
-                            invisibleForm.FormBorderStyle = FormBorderStyle.None;
-                            invisibleForm.Opacity = 0;
+            //             // Usar el método existente para mostrar el ícono en la bandeja del sistema
+            //             using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
+            //                 "ECM Central - Monitor de impresión"))
+            //             {
+            //                 // Mantener la aplicación en ejecución
+            //                 Application.Run(invisibleForm);
+            //             }
+            //         }
+            //         else
+            //         {
+            //             // Modo normal con interfaz de usuario
+            //             // Crear un formulario invisible para mantener la aplicación en ejecución
+            //             using (Form invisibleForm = new Form())
+            //             {
+            //                 invisibleForm.WindowState = FormWindowState.Minimized;
+            //                 invisibleForm.ShowInTaskbar = false;
+            //                 invisibleForm.FormBorderStyle = FormBorderStyle.None;
+            //                 invisibleForm.Opacity = 0;
 
-                            // Añadir ícono en la bandeja del sistema
-                            using (NotifyIcon trayIcon = new NotifyIcon())
-                            {
-                                trayIcon.Icon = System.Drawing.SystemIcons.Application;
-                                trayIcon.Text = "ECM Central - Monitor de impresión";
-                                trayIcon.Visible = true;
+            //                 // Añadir ícono en la bandeja del sistema
+            //                 using (NotifyIcon trayIcon = new NotifyIcon())
+            //                 {
+            //                     trayIcon.Icon = System.Drawing.SystemIcons.Application;
+            //                     trayIcon.Text = "ECM Central - Monitor de impresión";
+            //                     trayIcon.Visible = true;
 
-                                // Menú contextual
-                                trayIcon.ContextMenuStrip = new ContextMenuStrip();
-                                trayIcon.ContextMenuStrip.Items.Add("Abrir aplicación", null, (s, e) => {
-                                    Process.Start(new ProcessStartInfo
-                                    {
-                                        FileName = Application.ExecutablePath,
-                                        UseShellExecute = true
-                                    });
-                                });
-                                trayIcon.ContextMenuStrip.Items.Add("Comprobar estado", null, (s, e) => {
-                                    WinFormsApiClient.VirtualWatcher.WatcherLogger.LogSystemDiagnostic();
-                                    MessageBox.Show("Diagnóstico del sistema registrado en los logs", "ECM Central",
-                                        MessageBoxButtons.OK, MessageBoxIcon.Information);
-                                });
-                                trayIcon.ContextMenuStrip.Items.Add("Salir", null, (s, e) => {
-                                    WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Stop();
-                                    Application.Exit();
-                                });
+            //                     // Menú contextual
+            //                     trayIcon.ContextMenuStrip = new ContextMenuStrip();
+            //                     trayIcon.ContextMenuStrip.Items.Add("Abrir aplicación", null, (s, e) => {
+            //                         Process.Start(new ProcessStartInfo
+            //                         {
+            //                             FileName = Application.ExecutablePath,
+            //                             UseShellExecute = true
+            //                         });
+            //                     });
+            //                     trayIcon.ContextMenuStrip.Items.Add("Comprobar estado", null, (s, e) => {
+            //                         WinFormsApiClient.VirtualWatcher.WatcherLogger.LogSystemDiagnostic();
+            //                         MessageBox.Show("Diagnóstico del sistema registrado en los logs", "ECM Central",
+            //                             MessageBoxButtons.OK, MessageBoxIcon.Information);
+            //                     });
+            //                     trayIcon.ContextMenuStrip.Items.Add("Salir", null, (s, e) => {
+            //                         WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Stop();
+            //                         Application.Exit();
+            //                     });
 
-                                // Mantener la aplicación en ejecución
-                                Application.Run(invisibleForm);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    WatcherLogger.LogError("Error al iniciar monitor de segundo plano", ex);
-                    if (!silentMode)
-                    {
-                        MessageBox.Show($"Error al iniciar el monitor en segundo plano: {ex.Message}",
-                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                }
-                return;
-            }
+            //                     // Mantener la aplicación en ejecución
+            //                     Application.Run(invisibleForm);
+            //                 }
+            //             }
+            //         }
+            //     }
+            //     catch (Exception ex)
+            //     {
+            //         WatcherLogger.LogError("Error al iniciar monitor de segundo plano", ex);
+            //         if (!silentMode)
+            //         {
+            //             MessageBox.Show($"Error al iniciar el monitor en segundo plano: {ex.Message}",
+            //                 "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            //         }
+            //     }
+            //     return;
+            // }
             else if (argument.StartsWith("/silentprint="))
             {
                 // Extraer la ruta del archivo

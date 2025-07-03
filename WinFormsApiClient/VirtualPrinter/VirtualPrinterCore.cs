@@ -671,218 +671,93 @@ Para evitar que aparezca el diálogo de guardar:
             }
         }
         public static bool ConfigureBullzipPrinter()
+{
+    try
+    {
+        string outputFolder = FIXED_OUTPUT_PATH;
+
+        // Crear archivo de log para diagnóstico
+        string printLogPath = Path.Combine(FIXED_OUTPUT_PATH, "print_hook_logs");
+        if (!Directory.Exists(printLogPath))
+            Directory.CreateDirectory(printLogPath);
+
+        string hookLog = Path.Combine(printLogPath, "bullzip_hook.log");
+        File.AppendAllText(hookLog, $"[{DateTime.Now}] Configurando Bullzip para la impresión\r\n");
+
+        // Asegurar que la carpeta de salida existe
+        if (!Directory.Exists(outputFolder))
+            Directory.CreateDirectory(outputFolder);
+
+        Console.WriteLine($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
+        WatcherLogger.LogActivity($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
+
+        // MODIFICADO: Usar el VBScript en lugar de crear batch aquí
+        // 1. Crear/verificar que existe el VBScript en PDFDialogAutomation
+        bool vbsCreated = PDFDialogAutomation.CreateSilentVBScript();
+        if (!vbsCreated)
         {
-            try
-            {
-                string outputFolder = FIXED_OUTPUT_PATH;
+            File.AppendAllText(hookLog, $"[{DateTime.Now}] Error: No se pudo crear el VBScript\r\n");
+            return false;
+        }
 
-                // Crear archivo de log para diagnóstico
-                string printLogPath = Path.Combine(FIXED_OUTPUT_PATH, "print_hook_logs");
-                if (!Directory.Exists(printLogPath))
-                    Directory.CreateDirectory(printLogPath);
+        // 2. Obtener la ruta del VBScript
+        string vbsPath = Path.Combine(outputFolder, "SilentLauncherForMoverPDFs.vbs");
+        File.AppendAllText(hookLog, $"[{DateTime.Now}] VBScript creado/verificado: {vbsPath}\r\n");
 
-                string hookLog = Path.Combine(printLogPath, "bullzip_hook.log");
-                File.AppendAllText(hookLog, $"[{DateTime.Now}] Configurando Bullzip para la impresión\r\n");
+        // 3. Configurar Bullzip para que use el VBScript
+        string bullzipConfigFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "Bullzip", "PDF Printer");
 
-                // Asegurar que la carpeta de salida existe
-                if (!Directory.Exists(outputFolder))
-                    Directory.CreateDirectory(outputFolder);
+        if (!Directory.Exists(bullzipConfigFolder))
+            Directory.CreateDirectory(bullzipConfigFolder);
 
-                Console.WriteLine($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
-                WatcherLogger.LogActivity($"Configurando Bullzip PDF Printer para carpeta: {outputFolder}");
+        string iniPath = Path.Combine(bullzipConfigFolder, "settings.ini");
 
-                // 1. Crear el archivo batch mejorado para mover específicamente el archivo recién creado
-                string batchPath = Path.Combine(outputFolder, "MoverPDFs.bat");
+        StringBuilder iniContent = new StringBuilder();
+        iniContent.AppendLine("[PDF Printer]");
+        iniContent.AppendLine($"Output={outputFolder}");
+        iniContent.AppendLine("ShowSaveAS=never");
+        iniContent.AppendLine("ShowSettings=never");
+        iniContent.AppendLine("ShowProgress=no");
+        iniContent.AppendLine("ShowProgressFinished=no");
+        iniContent.AppendLine("ConfirmOverwrite=no");
+        iniContent.AppendLine("OpenViewer=no");
 
-                // Este es un nuevo enfoque donde el batch recibe como parámetro el archivo recién creado
-                string batchContent = $@"@echo off
-title Procesador de PDF para ECM Central
-color 0A
-echo ============================================
-echo    PROCESADOR DE PDF - ECM CENTRAL
-echo ============================================
-echo.
+        // CLAVE: Usar el VBScript en lugar del batch directo
+        iniContent.AppendLine($"RunOnSuccess=\"wscript.exe \\\"{vbsPath}\\\"\"");
+        iniContent.AppendLine("RunOnSuccessParameters=\"%s\"");
 
-:: Establecer carpeta de logs
-set OUTPUT_FOLDER={outputFolder}
-if not exist ""%OUTPUT_FOLDER%\logs"" mkdir ""%OUTPUT_FOLDER%\logs""
-set LOGFILE=""%OUTPUT_FOLDER%\logs\pdf_processor.log""
+        // También ejecutar al INICIO del trabajo para mayor seguridad
+        iniContent.AppendLine("RunOnPrinterEvent=1");
+        iniContent.AppendLine($"RunPrinterEvent=\"wscript.exe \\\"{vbsPath}\\\"\"");
+        iniContent.AppendLine("RunPrinterEventTiming=before");
 
-:: Registrar inicio del procesamiento
-echo [%date% %time%] MoverPDFs.bat iniciado >> %LOGFILE%
+        iniContent.AppendLine($"FilenameTemplate=ECM_{DateTime.Now:yyyyMMdd}_<time:HHmmss>");
+        iniContent.AppendLine("RememberLastFolders=no");
+        iniContent.AppendLine("RememberLastName=no");
+        iniContent.AppendLine("RetainDialog=no");
+        iniContent.AppendLine("DefaultSaveSettings=yes");
+        iniContent.AppendLine("Debug=1"); // Activar modo debug de Bullzip
+        iniContent.AppendLine($"DebugFile={outputFolder}\\logs\\bullzip_debug.log");
 
-:: Si se ha pasado un archivo como parámetro, procesarlo directamente
-if not ""%~1""=="""" (
-    echo [%date% %time%] Procesando archivo recibido: %~1 >> %LOGFILE%
-    echo Procesando archivo: %~1
-    
-    :: Marcar este archivo para procesamiento por la aplicación
-    echo %~1 > ""%OUTPUT_FOLDER%\last_bullzip_file.marker""
-    
-    :: Verificar si la aplicación está ejecutándose
-    tasklist /FI ""IMAGENAME eq WinFormsApiClient.exe"" 2>NUL | find /I /N ""WinFormsApiClient.exe"">NUL
-    if errorlevel 1 (
-        echo [%date% %time%] Iniciando aplicación con archivo: %~1 >> %LOGFILE%
-        start """" ""{Application.ExecutablePath}"" /processfile=""%~1""
-    ) else (
-        echo [%date% %time%] Aplicación ya en ejecución, notificando archivo >> %LOGFILE%
-    )
-    
-    :: Salir del batch después de procesar el archivo específico
-    exit /b 0
-)
+        File.WriteAllText(iniPath, iniContent.ToString());
+        File.AppendAllText(hookLog, $"[{DateTime.Now}] Configuración de Bullzip actualizada: {iniPath}\r\n");
 
-:: Si no se especificó archivo, buscar en carpetas comunes
-echo [%date% %time%] Buscando archivos PDF en carpetas comunes >> %LOGFILE%
+        // 4. Asegurar que el VBScript tiene los permisos necesarios para ejecutarse
+        try
+        {
+            EnsureScriptPermissions(vbsPath);
+            File.AppendAllText(hookLog, $"[{DateTime.Now}] Permisos aplicados al VBScript\r\n");
+        }
+        catch (Exception permEx)
+        {
+            File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al aplicar permisos: {permEx.Message}\r\n");
+        }
 
-:: Monitorear carpetas comunes buscando PDFs creados en los últimos 10 segundos
-for %%F in (
-    ""%USERPROFILE%\Downloads\*.pdf""
-    ""%USERPROFILE%\Documents\*.pdf""
-    ""%USERPROFILE%\Desktop\*.pdf""
-    ""%TEMP%\*.pdf""
-) do (
-    :: Verificar si el archivo es reciente (creado/modificado en los últimos segundos)
-    forfiles /P ""%~dp0"" /M ""%%~nxF"" /D +0 /C ""cmd /c echo @path es reciente"" >nul 2>&1
-    if not errorlevel 1 (
-        echo [%date% %time%] Archivo reciente encontrado: %%F >> %LOGFILE%
-        move ""%%F"" ""{outputFolder}\%%~nxF"" > nul 2>&1
-        if not exist ""%%F"" (
-            echo [%date% %time%] Movido correctamente: %%~nxF >> %LOGFILE%
-            echo Archivo movido a: {outputFolder}\%%~nxF
-            
-            :: Marcar para procesamiento
-            echo {outputFolder}\%%~nxF > ""%OUTPUT_FOLDER%\last_bullzip_file.marker""
-        )
-    )
-)
-
-exit /b 0
-";
-
-                // Escribir el archivo batch
-                File.WriteAllText(batchPath, batchContent);
-                File.AppendAllText(hookLog, $"[{DateTime.Now}] Archivo batch creado: {batchPath}\r\n");
-
-                // 2. Configurar Bullzip para que use este batch con el parámetro correcto
-                string bullzipConfigFolder = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                    "Bullzip", "PDF Printer");
-
-                if (!Directory.Exists(bullzipConfigFolder))
-                    Directory.CreateDirectory(bullzipConfigFolder);
-
-                string iniPath = Path.Combine(bullzipConfigFolder, "settings.ini");
-
-                StringBuilder iniContent = new StringBuilder();
-                iniContent.AppendLine("[PDF Printer]");
-                iniContent.AppendLine($"Output={outputFolder}");
-                iniContent.AppendLine("ShowSaveAS=never");
-                iniContent.AppendLine("ShowSettings=never");
-                iniContent.AppendLine("ShowProgress=no");
-                iniContent.AppendLine("ShowProgressFinished=no");
-                iniContent.AppendLine("ConfirmOverwrite=no");
-                iniContent.AppendLine("OpenViewer=no");
-
-                // AMBOS eventos: Antes Y después de imprimir
-                iniContent.AppendLine($"RunOnSuccess=\"{batchPath}\"");
-                iniContent.AppendLine("RunOnSuccessParameters=\"%s\"");
-
-                // IMPORTANTE: Ejecutar también MoverPDFs.bat al INICIO del trabajo
-                iniContent.AppendLine("RunOnPrinterEvent=1");
-                iniContent.AppendLine($"RunPrinterEvent=\"{batchPath}\"");
-                iniContent.AppendLine("RunPrinterEventTiming=before");
-
-                iniContent.AppendLine($"FilenameTemplate=ECM_{DateTime.Now:yyyyMMdd}_<time:HHmmss>");
-                iniContent.AppendLine("RememberLastFolders=no");
-                iniContent.AppendLine("RememberLastName=no");
-                iniContent.AppendLine("RetainDialog=no");
-                iniContent.AppendLine("DefaultSaveSettings=yes");
-                iniContent.AppendLine("Debug=1"); // Activar modo debug de Bullzip
-                iniContent.AppendLine($"DebugFile={outputFolder}\\logs\\bullzip_debug.log");
-
-                File.WriteAllText(iniPath, iniContent.ToString());
-                File.AppendAllText(hookLog, $"[{DateTime.Now}] Configuración de Bullzip actualizada: {iniPath}\r\n");
-
-                // 3. Asegurar que el archivo MoverPDFs.bat tiene los permisos necesarios para ejecutarse
-                try
-                {
-                    EnsureScriptPermissions(batchPath);
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Permisos aplicados al batch\r\n");
-                }
-                catch (Exception permEx)
-                {
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al aplicar permisos: {permEx.Message}\r\n");
-                }
-
-                // 4. Crear un FileSystemWatcher para detectar el archivo creado por Bullzip
-                try
-                {
-                    // Configurar FileSystemWatcher para carpeta de salida
-                    FileSystemWatcher watcher = new FileSystemWatcher
-                    {
-                        Path = outputFolder,
-                        Filter = "*.pdf",
-                        NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime,
-                        EnableRaisingEvents = true
-                    };
-
-                    // Evento que se dispara cuando se crea un archivo
-                    watcher.Created += (sender, e) =>
-                    {
-                        try
-                        {
-                            string logFilePath = Path.Combine(printLogPath, "pdf_watcher.log");
-                            File.AppendAllText(logFilePath, $"[{DateTime.Now}] Nuevo PDF detectado: {e.FullPath}\r\n");
-
-                            // Esperar a que el archivo se complete
-                            Thread.Sleep(1000);
-
-                            // Verificar que el archivo exista aún
-                            if (File.Exists(e.FullPath))
-                            {
-                                // Registrarlo para procesamiento
-                                string markerPath = Path.Combine(outputFolder, "last_bullzip_file.marker");
-                                File.WriteAllText(markerPath, e.FullPath);
-                                File.AppendAllText(logFilePath, $"[{DateTime.Now}] Archivo marcado para procesamiento: {e.FullPath}\r\n");
-
-                                // Lanzar proceso si es necesario
-                                Process[] processes = Process.GetProcessesByName("WinFormsApiClient");
-                                if (processes.Length == 0)
-                                {
-                                    ProcessStartInfo startInfo = new ProcessStartInfo
-                                    {
-                                        FileName = Application.ExecutablePath,
-                                        Arguments = $"/processfile=\"{e.FullPath}\"",
-                                        UseShellExecute = true
-                                    };
-
-                                    Process.Start(startInfo);
-                                    File.AppendAllText(logFilePath, $"[{DateTime.Now}] Aplicación iniciada para procesar archivo\r\n");
-                                }
-                                else
-                                {
-                                    File.AppendAllText(logFilePath, $"[{DateTime.Now}] Aplicación ya en ejecución, archivo marcado\r\n");
-                                }
-                            }
-                        }
-                        catch (Exception watcherEx)
-                        {
-                            string errorPath = Path.Combine(printLogPath, "pdf_watcher_error.log");
-                            File.AppendAllText(errorPath, $"[{DateTime.Now}] Error en watcher: {watcherEx.Message}\r\n");
-                        }
-                    };
-
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] FileSystemWatcher configurado para: {outputFolder}\r\n");
-                }
-                catch (Exception watcherEx)
-                {
-                    File.AppendAllText(hookLog, $"[{DateTime.Now}] Error al configurar watcher: {watcherEx.Message}\r\n");
-                }
-
-                // 5. También crear un archivo de instrucciones
-                string instructionsPath = Path.Combine(outputFolder, "INSTRUCCIONES.txt");
-                string instructions = $@"INSTRUCCIONES PARA USAR ECM CENTRAL CON BULLZIP
+        // 5. Crear instrucciones actualizadas
+        string instructionsPath = Path.Combine(outputFolder, "INSTRUCCIONES.txt");
+        string instructions = $@"INSTRUCCIONES PARA USAR ECM CENTRAL CON BULLZIP
 =============================================
 
 1. Para imprimir documentos:
@@ -890,29 +765,34 @@ exit /b 0
    - El archivo PDF se guardará automáticamente en esta carpeta
    - La aplicación ECM Central procesará automáticamente el archivo
 
-2. Si necesita procesar manualmente un archivo PDF:
+2. Sistema de procesamiento:
+   - Bullzip ejecutará automáticamente: {vbsPath}
+   - El VBScript iniciará el monitor de PDFs silenciosamente
+   - Los archivos se procesarán automáticamente
+
+3. Si necesita procesar manualmente un archivo PDF:
    - Colóquelo en esta carpeta ({outputFolder})
    - La aplicación lo detectará automáticamente
 
-3. Si encuentra algún problema:
-   - Ejecute manualmente el archivo MoverPDFs.bat en esta carpeta
+4. Si encuentra algún problema:
+   - Ejecute manualmente el archivo VBScript: {vbsPath}
 
 Configurado el {DateTime.Now}
 ";
-                File.WriteAllText(instructionsPath, instructions);
+        File.WriteAllText(instructionsPath, instructions);
 
-                Console.WriteLine("✓ Configuración de Bullzip completada con éxito");
-                WatcherLogger.LogActivity("Configuración de Bullzip completada con éxito");
+        Console.WriteLine("✓ Configuración de Bullzip completada con éxito usando VBScript");
+        WatcherLogger.LogActivity("Configuración de Bullzip completada con éxito usando VBScript");
 
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al configurar Bullzip: {ex.Message}");
-                WatcherLogger.LogError("Error al configurar Bullzip", ex);
-                return false;
-            }
-        }
+        return true;
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error al configurar Bullzip: {ex.Message}");
+        WatcherLogger.LogError("Error al configurar Bullzip", ex);
+        return false;
+    }
+}
         /// <summary>
         /// Implementa soluciones para garantizar que el monitor se inicie con Bullzip
         /// sin entrar en bucles infinitos

@@ -102,7 +102,7 @@ namespace WinFormsApiClient
             statusLabel = new Label();
             statusLabel.AutoSize = true;
             statusLabel.Location = new Point(20, this.ClientSize.Height - 30);
-            statusLabel.Text = "Listo";
+            statusLabel.Text = "";
             statusLabel.ForeColor = Color.Gray;
             this.Controls.Add(statusLabel);
 

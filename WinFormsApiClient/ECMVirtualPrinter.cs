@@ -119,18 +119,18 @@ namespace WinFormsApiClient
                 // Si estamos en la aplicación principal o tenemos un archivo para imprimir
                 if (mainAppRunning || !string.IsNullOrEmpty(filePath))
                 {
-                    // Iniciar el monitor en segundo plano obligatoriamente antes de imprimir
-                    bool monitorStarted = await StartBackgroundMonitorAsync();
+                    //// Iniciar el monitor en segundo plano obligatoriamente antes de imprimir
+                    //bool monitorStarted = await StartBackgroundMonitorAsync();
 
-                    if (!monitorStarted)
-                    {
-                        MessageBox.Show(
-                            "No se pudo iniciar el monitor en segundo plano necesario para la impresión.\n" +
-                            "Por favor, inténtelo nuevamente o ejecute la aplicación con el parámetro /backgroundmonitor.",
-                            "Error de inicialización",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
-                        return;
-                    }
+                    //if (!monitorStarted)
+                    //{
+                    //    MessageBox.Show(
+                    //        "No se pudo iniciar el monitor en segundo plano necesario para la impresión.\n" +
+                    //        "Por favor, inténtelo nuevamente o ejecute la aplicación con el parámetro /backgroundmonitor.",
+                    //        "Error de inicialización",
+                    //        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    //    return;
+                    //}
 
                     // Esperar un momento para que el monitor se inicialice completamente
                     await Task.Delay(1000);

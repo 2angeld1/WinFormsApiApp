@@ -511,66 +511,41 @@ Si tiene problemas, contacte al soporte técnico.
         /// Instala el servicio para que se inicie automáticamente con Windows
         /// </summary>
         public static bool InstallAutostart()
+{
+    try
+    {
+        using (RegistryKey key = Registry.CurrentUser.OpenSubKey(
+            @"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true))
         {
-            try
+            if (key != null)
             {
-                WatcherLogger.LogActivity("Instalando servicio de monitoreo para autoarranque");
-
-                // Obtener la ruta del ejecutable actual
-                string exePath = Application.ExecutablePath;
-                string args = "/backgroundmonitor /silent";
-
-                // Ya no utilizamos el método de registro para evitar duplicidad
-                // Solo registramos que se intentó pero fue omitido deliberadamente
-                WatcherLogger.LogActivity("Omitiendo instalación por registro (desactivado para evitar duplicaciones)");
-                bool registrySuccess = false;
-
-                // Utilizamos solo el método alternativo: crear un acceso directo en la carpeta de inicio
-                bool shortcutSuccess = false;
+                // Primero eliminar cualquier entrada existente para evitar duplicados
                 try
                 {
-                    string startupFolder = Path.Combine(
-                        Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-                        "ECM Monitor.lnk");
-
-                    // Crear acceso directo con PowerShell
-                    string psCommand = $@"
-$WshShell = New-Object -ComObject WScript.Shell
-$shortcut = $WshShell.CreateShortcut('{startupFolder.Replace("\\", "\\\\")}')
-$shortcut.TargetPath = '{exePath.Replace("\\", "\\\\")}'
-$shortcut.Arguments = '{args}'
-$shortcut.WorkingDirectory = '{Path.GetDirectoryName(exePath).Replace("\\", "\\\\")}'
-$shortcut.Description = 'Inicia el monitor de ECM Central'
-$shortcut.IconLocation = '{exePath.Replace("\\", "\\\\")}, 0'
-$shortcut.Save()
-Write-Output 'Acceso directo creado correctamente'";
-
-                    string result = PowerShellHelper.RunPowerShellCommandWithOutput(psCommand);
-                    shortcutSuccess = result.Contains("correctamente");
-
-                    if (shortcutSuccess)
-                        WatcherLogger.LogActivity("Acceso directo creado en carpeta de inicio");
+                    key.DeleteValue(_startupKey, false);
                 }
-                catch (Exception shortcutEx)
+                catch { /* Ignorar si no existe */ }
+
+                // Agregar UNA SOLA entrada con argumentos específicos
+                string startupCommand = $"\"{Application.ExecutablePath}\" /backgroundmonitor /silent";
+                key.SetValue(_startupKey, startupCommand);
+                
+                // Verificar que se guardó correctamente
+                string savedValue = key.GetValue(_startupKey)?.ToString();
+                if (savedValue == startupCommand)
                 {
-                    WatcherLogger.LogError("Error al crear acceso directo", shortcutEx);
+                    Console.WriteLine("Autostart instalado correctamente");
+                    return true;
                 }
-
-                // Solo el método de acceso directo determina si hubo éxito
-                _isInstalled = shortcutSuccess;
-
-                // Registrar que ahora solo usamos la tarea programada como mecanismo de inicio
-                string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "autostart_setup.log");
-                File.AppendAllText(logPath, $"[{DateTime.Now}] Instalación por registro desactivada para evitar duplicaciones. Solo se usa tarea programada.\r\n");
-
-                return _isInstalled;
-            }
-            catch (Exception ex)
-            {
-                WatcherLogger.LogError("Error al instalar servicio para autoarranque", ex);
-                return false;
             }
         }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error instalando autostart: {ex.Message}");
+    }
+    return false;
+}
 
         /// <summary>
         /// Desinstala el servicio del autoarranque

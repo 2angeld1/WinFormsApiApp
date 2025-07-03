@@ -169,8 +169,8 @@
       <DependentUpon>Settings.settings</DependentUpon>
       <DesignTimeSharedInput>True</DesignTimeSharedInput>
     </Compile>
-    <None Include="Scripts\AutoIt\BullzipSaveDialog.au3" />
-    <None Include="Scripts\Batch\IniciarAutomatizacionBullzip.bat" />
+    <!-- <None Include="Scripts\AutoIt\BullzipSaveDialog.au3" />
+    <None Include="Scripts\Batch\IniciarAutomatizacionBullzip.bat" /> -->
     <None Include="Scripts\Batch\MoverPDFs.bat" />
     <None Include="webfonts\fa-brands-400.eot" />
     <None Include="webfonts\fa-brands-400.ttf" />
@@ -205,11 +205,13 @@
     <Content Include="Content\v4-shims.min.css" />
     <Content Include="ecmicon.ico" />
     <Content Include="images\ecmicon.ico">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="images\illustration.png">
-      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
+    <Content Include="License.txt" />
+    <Content Include="ReadMe.txt" />
     <Content Include="Scripts\fontawesome\all.js" />
     <Content Include="Scripts\fontawesome\all.min.js" />
     <Content Include="Scripts\fontawesome\brands.js" />

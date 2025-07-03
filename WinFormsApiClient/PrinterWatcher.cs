@@ -58,8 +58,11 @@ namespace WinFormsApiClient
                 // Verificar si la impresora está instalada
                 Task.Run(async () => await VirtualPrinter.PrinterInstaller.InstallPrinterAsync()).Wait();
 
-                // Iniciar el monitoreo de archivos
-                FileMonitor.Instance.StartMonitoring();
+                // Solo verificar que el monitor de fondo esté activo
+                if (!VirtualWatcher.BackgroundMonitorService.IsActuallyRunning())
+                {
+                    Console.WriteLine("Monitor de fondo no está activo. Use /backgroundmonitor para iniciarlo.");
+                }
 
                 Console.WriteLine("PrinterWatcher iniciado");
             }
