@@ -15,20 +15,50 @@ namespace WinFormsApiClient
         private static bool _initialized = false;
         private static ConsoleOutputInterceptor _consoleInterceptor;
 
+        // NUEVO: Ruta fija para el archivo de diagnóstico
+        private static readonly string LOG_FOLDER = @"C:\Temp\ECM Central";
+        private static readonly string LOG_FILE_NAME = "ecm_diagnostics.txt";
+
         public static void Initialize()
         {
             if (_initialized) return;
 
             try
             {
-                // Crear un archivo de log con timestamp
-                string timestamp = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                _logFilePath = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                    $"ecm_diagnostics_{timestamp}.txt");
+                // MODIFICADO: Usar ruta fija sin timestamp
+                if (!Directory.Exists(LOG_FOLDER))
+                {
+                    Directory.CreateDirectory(LOG_FOLDER);
+                }
 
-                // Crear el archivo
-                File.WriteAllText(_logFilePath, $"=== INICIO DE DIAGNÓSTICO {timestamp} ===\r\n");
+                _logFilePath = Path.Combine(LOG_FOLDER, LOG_FILE_NAME);
+
+                // MODIFICADO: Si el archivo existe, borrarlo para empezar limpio
+                if (File.Exists(_logFilePath))
+                {
+                    try
+                    {
+                        File.Delete(_logFilePath);
+                        Console.WriteLine("Archivo de diagnóstico anterior eliminado");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"No se pudo eliminar archivo anterior: {ex.Message}");
+                        // Continuar usando el archivo existente
+                    }
+                }
+
+                // Crear el archivo con encabezado de nueva sesión
+                string sessionHeader = $"=== NUEVA SESIÓN DE DIAGNÓSTICO ===\r\n" +
+                                     $"Fecha y hora: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n" +
+                                     $"Aplicación: ECM Central\r\n" +
+                                     $"Versión: {System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version}\r\n" +
+                                     $"Sistema: {Environment.OSVersion}\r\n" +
+                                     $"Usuario: {Environment.UserName}\r\n" +
+                                     $"Directorio de trabajo: {Environment.CurrentDirectory}\r\n" +
+                                     $"========================================\r\n\r\n";
+
+                File.WriteAllText(_logFilePath, sessionHeader);
 
                 // Configurar timer para guardar el log periódicamente
                 _flushTimer = new Timer(FlushLog, null, 2000, 2000);
@@ -38,6 +68,7 @@ namespace WinFormsApiClient
                 _consoleInterceptor.OnConsoleOutput += HandleConsoleOutput;
 
                 LogInfo("Sistema de diagnóstico inicializado correctamente");
+                LogInfo($"Archivo de log: {_logFilePath}");
                 _initialized = true;
             }
             catch (Exception ex)
@@ -140,7 +171,7 @@ namespace WinFormsApiClient
                     _logBuffer.Clear();
                 }
 
-                if (!string.IsNullOrEmpty(textToWrite))
+                if (!string.IsNullOrEmpty(textToWrite) && !string.IsNullOrEmpty(_logFilePath))
                 {
                     File.AppendAllText(_logFilePath, textToWrite);
                 }
@@ -152,12 +183,26 @@ namespace WinFormsApiClient
         {
             try
             {
+                LogInfo("Finalizando sesión de diagnóstico");
+                LogInfo($"=== FIN DE SESIÓN: {DateTime.Now:yyyy-MM-dd HH:mm:ss} ===");
+                
                 FlushLog(null);
                 _flushTimer?.Dispose();
                 _consoleInterceptor?.Dispose();
-                LogInfo("Sistema de diagnóstico finalizado");
+                
+                // Agregar separador para próxima sesión
+                if (!string.IsNullOrEmpty(_logFilePath))
+                {
+                    File.AppendAllText(_logFilePath, "\r\n" + new string('=', 60) + "\r\n\r\n");
+                }
             }
             catch { /* Ignorar errores al cerrar */ }
+        }
+
+        // NUEVO: Método para obtener la ruta del archivo de log
+        public static string GetLogFilePath()
+        {
+            return _logFilePath ?? Path.Combine(LOG_FOLDER, LOG_FILE_NAME);
         }
 
         /// <summary>
