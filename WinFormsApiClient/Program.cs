@@ -1,1240 +1,734 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
-using System.Management;
-using System.Runtime.InteropServices; // Añadir esta línea
-using System.Text; // Para Encoding
 using System.Threading;
-using System.Threading.Tasks; // Agregar esta línea para Task
+using System.Threading.Tasks;
 using System.Windows.Forms;
-using WinFormsApiClient.VirtualPrinter;
-using WinFormsApiClient.VirtualWatcher;
+using Microsoft.Win32;
+using WinFormsApiClient.NewVirtualPrinter;
+
 namespace WinFormsApiClient
 {
     static class Program
     {
-        static Mutex monitorMutex;
+        // Eliminar referencias al monitor - ya no necesitamos mutex
+        // static Mutex monitorMutex; // ELIMINADO
 
         /// <summary>
         /// Punto de entrada principal para la aplicación.
         /// </summary>
         [STAThread]
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
-            Application.ThreadException += (sender, e) => {
-                try
-                {
-                    Console.WriteLine($"Excepción no controlada en hilo de UI: {e.Exception.Message}");
-                    Console.WriteLine($"Stack trace: {e.Exception.StackTrace}");
-
-                    // Registrar en archivo de log
-                    File.AppendAllText(
-                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_error_log.txt"),
-                        $"[{DateTime.Now}] Excepción en UI: {e.Exception.Message}\r\n{e.Exception.StackTrace}\r\n\r\n");
-
-                    MessageBox.Show(
-                        $"Se ha producido un error en la aplicación:\n{e.Exception.Message}\n\nLa aplicación intentará continuar.",
-                        "Error en la aplicación",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
-                }
-                catch
-                {
-                    // Si falla el manejo de excepciones, no podemos hacer mucho más
-                }
-            };
-
-            // Configurar manejo global para excepciones en otros hilos
-            AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
-                try
-                {
-                    var ex = e.ExceptionObject as Exception;
-                    Console.WriteLine($"Excepción no controlada en AppDomain: {ex?.Message}");
-
-                    File.AppendAllText(
-                        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_error_log.txt"),
-                        $"[{DateTime.Now}] Excepción en AppDomain: {ex?.Message}\r\n{ex?.StackTrace}\r\n\r\n");
-                }
-                catch
-                {
-                    // Si falla el manejo de excepciones, no podemos hacer mucho más
-                }
-            };
-            // Configurar manejo de excepciones no controladas
-            AppDomain.CurrentDomain.UnhandledException += (s, e) => {
-                if (e.ExceptionObject is Exception ex)
-                    WatcherLogger.LogError("Excepción no controlada a nivel de dominio", ex);
-            };
-            Application.ThreadException += (s, e) =>
-                WatcherLogger.LogError("Excepción no controlada en hilo de UI", e.Exception);
-            if (args.Length > 0)
+            try
             {
-                foreach (string arg in args)
-                {
-                    // Si detectamos que se está intentando ejecutar un batch, hacerlo silenciosamente
-                    if (arg.EndsWith(".bat", StringComparison.OrdinalIgnoreCase) && File.Exists(arg))
+                // Configurar logging desde el inicio
+                LogToFile("=== INICIANDO ECM CENTRAL ===");
+                LogToFile($"Argumentos recibidos: {string.Join(" ", args)}");
+                LogToFile($"Directorio de trabajo: {Environment.CurrentDirectory}");
+                LogToFile($"Ejecutable: {Application.ExecutablePath}");
+
+                // Configurar manejo de excepciones no controladas
+                Application.ThreadException += (sender, e) => {
+                    try
                     {
-                        // Ejecutar silenciosamente en lugar de mostrar ventana
-                        //VirtualPrinter.VirtualPrinterCore.RunBatchSilently(arg);
-                        return; // Salir sin mostrar ventana
+                        string errorMsg = $"Excepción no controlada en hilo de UI: {e.Exception.Message}";
+                        Console.WriteLine(errorMsg);
+                        Console.WriteLine($"Stack trace: {e.Exception.StackTrace}");
+                        LogToFile($"ERROR UI: {errorMsg}");
+                        LogToFile($"Stack trace: {e.Exception.StackTrace}");
+
+                        MessageBox.Show(
+                            $"Se ha producido un error en la aplicación:\n{e.Exception.Message}\n\nRevisa el log en Desktop para más detalles.",
+                            "Error en la aplicación",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Error);
                     }
-                }
+                    catch
+                    {
+                        // Si falla el manejo de excepciones, no podemos hacer mucho más
+                    }
+                };
 
-                ProcessCommandLineArguments(args);
-                return;
-            }
-            // Procesar argumentos
-            bool isSilentMode = args.Contains("/silent");
-            bool isBackgroundMonitor = args.Contains("/backgroundmonitor");
+                AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
+                    try
+                    {
+                        var ex = e.ExceptionObject as Exception;
+                        string errorMsg = $"Excepción no controlada en AppDomain: {ex?.Message}";
+                        Console.WriteLine(errorMsg);
+                        LogToFile($"ERROR AppDomain: {errorMsg}");
+                        LogToFile($"Stack trace: {ex?.StackTrace}");
+                    }
+                    catch
+                    {
+                        // Si falla el manejo de excepciones, no podemos hacer mucho más
+                    }
+                };
 
-            if (isBackgroundMonitor)
-            {
-                bool createdNew = false;
-                monitorMutex = new Mutex(true, "Global\\ECMBackgroundMonitorMutex", out createdNew);
-                if (!createdNew)
+                // Procesar argumentos de línea de comandos
+                if (args.Length > 0)
                 {
-                    Console.WriteLine("Ya existe una instancia del monitor ejecutándose.");
+                    LogToFile($"Procesando argumentos de línea de comandos: {args.Length} argumentos");
+                    await ProcessCommandLineArguments(args);
+                    LogToFile("=== FIN PROCESAMIENTO ARGUMENTOS ===");
                     return;
                 }
 
-                // Asegurar que se crea la carpeta de salida y los archivos necesarios
-                try
+                // Inicializar el sistema de impresión al iniciar la aplicación
+                LogToFile("Inicializando sistema de impresión virtual...");
+                await VirtualPrinterService.InitializeAsync();
+                LogToFile("Sistema de impresión inicializado");
+
+                LogToFile("Iniciando aplicación normal (sin argumentos)");
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new LoginForm());
+                LogToFile("=== FIN APLICACIÓN NORMAL ===");
+            }
+            catch (Exception ex)
+            {
+                LogToFile($"ERROR CRÍTICO en Main: {ex.Message}");
+                LogToFile($"Stack trace: {ex.StackTrace}");
+                MessageBox.Show($"Error crítico al iniciar la aplicación:\n{ex.Message}", 
+                    "Error crítico", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private static void LogToFile(string message)
+        {
+            try
+            {
+                string logFile = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_full_log.txt");
+                string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}";
+                File.AppendAllText(logFile, logEntry + "\r\n");
+                Console.WriteLine(logEntry);
+            }
+            catch
+            {
+                // Si no podemos escribir el log, al menos mostrar en consola
+                Console.WriteLine($"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] {message}");
+            }
+        }
+
+        private static async Task ProcessCommandLineArguments(string[] args)
+        {
+            string argument = args[0].ToLower();
+            LogToFile($"Procesando argumento principal: '{argument}'");
+
+            if (argument == "/diagnose")
+            {
+                LogToFile("=== COMANDO /diagnose ===");
+                Console.WriteLine("=== INICIANDO DIAGNÓSTICO ===");
+
+                VirtualPrinterService.RunDiagnostics();
+                LogToFile("Diagnóstico ejecutado");
+
+                // MOSTRAR RESULTADO EN VENTANA
+                string diagFile = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "pdfcreator_diagnosis.txt");
+
+                if (File.Exists(diagFile))
                 {
-                    // Crear la carpeta de salida si no existe
-                    if (!Directory.Exists(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH))
-                    {
-                        Directory.CreateDirectory(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH);
-                        Console.WriteLine($"Carpeta creada: {VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH}");
-                    }
+                    string content = File.ReadAllText(diagFile);
+                    string preview = content.Length > 500 ? content.Substring(Math.Max(0, content.Length - 500)) : content;
 
-                    // Forzar la creación del archivo MoverPDFs.bat
-                    VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
-                    Console.WriteLine("Archivo MoverPDFs.bat verificado/creado");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error al inicializar archivos: {ex.Message}");
-                }
-
-                // Crear icono en la bandeja del sistema
-                NotifyIcon trayIcon = new NotifyIcon();
-                
-                try
-                {
-                    // Intentar cargar el icono de la aplicación
-                    trayIcon.Icon = AppIcon.DefaultIcon ?? SystemIcons.Application;
-                    trayIcon.Text = "ECM Central - Monitor de impresión activo";
-                    trayIcon.Visible = true;
-                    Console.WriteLine("Icono de bandeja del sistema configurado correctamente");
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error al configurar icono: {ex.Message}");
-                    trayIcon.Icon = SystemIcons.Application; // Fallback
-                    trayIcon.Text = "ECM Central - Monitor activo";
-                    trayIcon.Visible = true;
-                }
-
-                // Configurar menú contextual del icono
-                ContextMenuStrip contextMenu = new ContextMenuStrip();
-                
-                // Opción para abrir la aplicación principal
-                ToolStripMenuItem openApp = new ToolStripMenuItem("Abrir ECM Central");
-                openApp.Click += (s, e) => {
-                    try
-                    {
-                        Process.Start(Application.ExecutablePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show($"Error al abrir aplicación: {ex.Message}", 
-                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    }
-                };
-                contextMenu.Items.Add(openApp);
-
-                // Separador
-                contextMenu.Items.Add(new ToolStripSeparator());
-
-                // Opción para detener el monitor
-                ToolStripMenuItem stopMonitor = new ToolStripMenuItem("Detener monitor");
-                stopMonitor.Click += (s, e) => {
-                    if (MessageBox.Show("¿Está seguro de que desea detener el monitor de impresión?", 
-                        "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                    {
-                        BackgroundMonitorService.Stop();
-                        Application.Exit();
-                    }
-                };
-                contextMenu.Items.Add(stopMonitor);
-
-                // Asignar el menú al icono
-                trayIcon.ContextMenuStrip = contextMenu;
-
-                // Configurar doble clic para abrir la aplicación
-                trayIcon.DoubleClick += (s, e) => {
-                    try
-                    {
-                        Process.Start(Application.ExecutablePath);
-                    }
-                    catch { }
-                };
-
-                if (isSilentMode)
-                {
-                    WatcherLogger.LogActivity("Iniciando monitor en modo silencioso");
-                    BackgroundMonitorService.StartSilently();
+                    LogToFile($"Archivo de diagnóstico creado: {diagFile}");
+                    MessageBox.Show($"Diagnóstico completado. Archivo: {diagFile}\n\nÚltimas líneas:\n{preview}",
+                        "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
                 else
                 {
-                    BackgroundMonitorService.Start();
+                    LogToFile("ERROR: No se pudo generar archivo de diagnóstico");
+                    MessageBox.Show("Diagnóstico completado, pero no se pudo generar el archivo.",
+                        "Diagnóstico", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
 
-                Application.Run(); // Mantener vivo el proceso con icono en bandeja
-                
-                // Cleanup al salir
-                trayIcon.Visible = false;
-                trayIcon.Dispose();
+                LogToFile("=== FIN COMANDO /diagnose ===");
                 return;
             }
-
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
-            // Configurar mecanismo de recuperación para evitar congelaciones
-            ConfigureApplicationRecovery();
-            
-            // Modo normal de la aplicación
-            Application.Run(new LoginForm());
-        }
-
-        private static void ConfigureApplicationRecovery()
-        {
-            try
+            else if (argument == "/setup")
             {
-                // Configurar recuperación de aplicación
-                ApplicationRecoveryManager.RegisterForApplicationRecovery(new ApplicationRecoveryManager.RecoveryCallback((state) =>
+                LogToFile("=== COMANDO /setup ===");
+                Console.WriteLine("=== INICIANDO SETUP ===");
+
+                // Mostrar progreso
+                using (var progressForm = new Form())
                 {
+                    progressForm.Text = "Configurando ECM Central";
+                    progressForm.Size = new Size(450, 200);
+                    progressForm.StartPosition = FormStartPosition.CenterScreen;
+                    progressForm.FormBorderStyle = FormBorderStyle.FixedDialog;
+                    progressForm.MaximizeBox = false;
+                    progressForm.MinimizeBox = false;
+
+                    var label = new Label
+                    {
+                        Text = "Configurando sistema de impresión virtual...",
+                        AutoSize = true,
+                        Location = new Point(20, 20)
+                    };
+                    progressForm.Controls.Add(label);
+
+                    var progressBar = new ProgressBar
+                    {
+                        Style = ProgressBarStyle.Marquee,
+                        Location = new Point(20, 60),
+                        Size = new Size(400, 23)
+                    };
+                    progressForm.Controls.Add(progressBar);
+
+                    var statusLabel = new Label
+                    {
+                        Text = "Iniciando...",
+                        AutoSize = true,
+                        Location = new Point(20, 100),
+                        ForeColor = Color.Blue
+                    };
+                    progressForm.Controls.Add(statusLabel);
+
+                    progressForm.Show();
+                    Application.DoEvents();
+
                     try
                     {
-                        // Generar un nombre de archivo único para cada proceso
-                        string uniqueFileName = $"ecm_recovery_{Process.GetCurrentProcess().Id}_{DateTime.Now:yyyyMMdd_HHmmss}.log";
-                        string recoveryLogPath = Path.Combine(
-                            Environment.GetFolderPath(Environment.SpecialFolder.Desktop),
-                            uniqueFileName);
+                        // Paso 1: Verificar PDFCreator
+                        statusLabel.Text = "Verificando PDFCreator...";
+                        Application.DoEvents();
+                        LogToFile("Verificando instalación de PDFCreator...");
 
-                        // Crear un mensaje de diagnóstico
-                        string recoveryMessage = $"[{DateTime.Now}] Recuperación iniciada desde estado de aplicación no respondiente\r\n";
+                        bool pdfCreatorInstalled = PDFCreatorManager.IsPDFCreatorInstalled();
+                        LogToFile($"PDFCreator instalado: {pdfCreatorInstalled}");
 
-                        // Usar FileShare.ReadWrite para permitir acceso simultáneo si es necesario
-                        using (StreamWriter writer = new StreamWriter(recoveryLogPath, true, Encoding.UTF8))
+                        if (!pdfCreatorInstalled)
                         {
-                            writer.WriteLine(recoveryMessage);
-                            writer.WriteLine($"[{DateTime.Now}] Proceso ID: {Process.GetCurrentProcess().Id}");
-                            writer.WriteLine($"[{DateTime.Now}] Archivos abiertos en procesamiento:");
+                            statusLabel.Text = "PDFCreator no encontrado. Instalando...";
+                            Application.DoEvents();
+                            LogToFile("PDFCreator no instalado, iniciando instalación...");
 
-                            // Añadir información sobre archivos en procesamiento
-                            try
-                            {
-                                string pendingFilePath = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
-                                if (File.Exists(pendingFilePath))
-                                {
-                                    string pendingFile = File.ReadAllText(pendingFilePath);
-                                    writer.WriteLine($"[{DateTime.Now}] Archivo pendiente: {pendingFile}");
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                writer.WriteLine($"[{DateTime.Now}] Error al leer archivo pendiente: {ex.Message}");
-                            }
+                            progressForm.Hide();
+                            pdfCreatorInstalled = await PDFCreatorInstaller.EnsurePDFCreatorInstalledAsync();
+                            progressForm.Show();
 
-                            writer.Flush();
+                            LogToFile($"Resultado de instalación: {pdfCreatorInstalled}");
+
+                            if (!pdfCreatorInstalled)
+                            {
+                                progressForm.Close();
+                                LogToFile("ERROR: Instalación de PDFCreator falló");
+                                MessageBox.Show("No se pudo instalar PDFCreator. El setup ha fallado.",
+                                    "Error de configuración", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                                return;
+                            }
                         }
 
-                        // Registrar en consola también
-                        Console.WriteLine(recoveryMessage);
-                        Console.WriteLine($"Log de recuperación creado en: {recoveryLogPath}");
+                        // Paso 2: Configurar PDFCreator
+                        statusLabel.Text = "Configurando PDFCreator...";
+                        Application.DoEvents();
+                        LogToFile("Configurando PDFCreator...");
 
-                        // Indicar a Windows que la recuperación fue exitosa
-                        ApplicationRecoveryManager.ApplicationRecoveryFinished(true);
-                        return 0;
+                        bool configured = PDFCreatorManager.ConfigurePDFCreator();
+                        // <-- AQUÍ agrega la verificación de la impresora:
+                        if (!PDFCreatorManager.IsPrinterInstalled("ECM Central Printer"))
+                        {
+                            MessageBox.Show("La impresora virtual 'ECM Central Printer' no está instalada. Por favor, reinstala PDFCreator.",
+                                "Impresora no encontrada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+
+                        LogToFile($"PDFCreator configurado: {configured}");
+
+                        progressForm.Close();
+
+                        if (configured)
+                        {
+                            string message = "Sistema de impresión configurado correctamente.\n\n" +
+                                "Configuración completada:\n" +
+                                $"• PDFCreator: ✓\n" +
+                                $"• Impresora: ECM Central Printer\n" +
+                                $"• Carpeta de salida: {PDFCreatorManager.OUTPUT_FOLDER}\n" +
+                                $"• Aplicación registrada: ✓\n\n" +
+                                "Ya puedes usar 'Imprimir a PDF' desde cualquier aplicación.\n\n" +
+                                "Usa /createtest para probar el sistema.";
+
+                            LogToFile("Setup completado exitosamente");
+                            MessageBox.Show(message, "Configuración completada",
+                                MessageBoxButtons.OK, MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            LogToFile("ERROR: Configuración de PDFCreator falló");
+                            MessageBox.Show("Error al configurar PDFCreator.",
+                                "Error de configuración", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Console.WriteLine($"Error en recuperación: {ex.Message}");
-                        ApplicationRecoveryManager.ApplicationRecoveryFinished(false);
-                        return -1;
-                    }
-                }), IntPtr.Zero, 30000, 0);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al configurar recuperación: {ex.Message}");
-            }
-        }
-        /// <summary>
-        /// Proporciona acceso a la API de recuperación de aplicaciones de Windows
-        /// </summary>
-        internal static class ApplicationRecoveryManager
-        {
-            // Delegado para la función de callback de recuperación
-            [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-            public delegate int RecoveryCallback(IntPtr pvParameter);
-
-            // Función P/Invoke para registrar la aplicación para recuperación
-            [DllImport("kernel32.dll")]
-            public static extern int RegisterApplicationRecoveryCallback(
-                RecoveryCallback pRecoveryCallback,
-                IntPtr pvParameter,
-                int dwPingInterval,
-                int dwFlags);
-
-            // Función P/Invoke para notificar que la recuperación ha finalizado
-            [DllImport("kernel32.dll")]
-            public static extern int ApplicationRecoveryFinished(
-                bool bSuccess);
-
-            // Función P/Invoke para cancelar la recuperación
-            [DllImport("kernel32.dll")]
-            public static extern int ApplicationRecoveryInProgress(
-                out bool pbCancelled);
-
-            /// <summary>
-            /// Envuelve la función nativa para registrar la recuperación de la aplicación
-            /// </summary>
-            public static void RegisterForApplicationRecovery(RecoveryCallback callback, IntPtr parameter, int pingInterval, int flags)
-            {
-                int result = RegisterApplicationRecoveryCallback(callback, parameter, pingInterval, flags);
-                if (result != 0)
-                {
-                    throw new InvalidOperationException($"Error al registrar para recuperación: código {result}");
-                }
-            }
-        }
-        /// <summary>
-        /// Previene que se ejecuten múltiples instancias del monitor de fondo
-        /// </summary>
-        private static bool PreventMultipleBackgroundInstances()
-        {
-            try
-            {
-                // Verificar si ya existe un marcador
-                string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
-                if (File.Exists(markerFilePath))
-                {
-                    try
-                    {
-                        // Verificar si el proceso existe
-                        string pidContent = File.ReadAllText(markerFilePath);
-                        if (int.TryParse(pidContent, out int pid))
-                        {
-                            try
-                            {
-                                Process proc = Process.GetProcessById(pid);
-                                if (!proc.HasExited)
-                                {
-                                    // El proceso está en ejecución, salir
-                                    return true;
-                                }
-                            }
-                            catch
-                            {
-                                // El proceso no existe, continuar
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // Error al leer el archivo, ignorar
+                        progressForm.Close();
+                        LogToFile($"ERROR en setup: {ex.Message}");
+                        MessageBox.Show($"Error durante el setup: {ex.Message}",
+                            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
 
-                // También verificar procesos directamente
-                Process currentProcess = Process.GetCurrentProcess();
-                var processes = Process.GetProcessesByName(currentProcess.ProcessName);
-
-                foreach (var proc in processes)
-                {
-                    try
-                    {
-                        if (proc.Id != currentProcess.Id) // No es este proceso
-                        {
-                            string cmdLine = GetProcessCommandLine(proc.Id);
-                            if (cmdLine.Contains("/backgroundmonitor"))
-                            {
-                                // Ya hay un proceso con /backgroundmonitor
-                                return true;
-                            }
-                        }
-                    }
-                    catch
-                    {
-                        // Ignorar errores
-                    }
-                }
-
-                return false;
-            }
-            catch
-            {
-                // En caso de error, asumir que no hay otra instancia
-                return false;
-            }
-        }
-        /// <summary>
-        /// Obtiene la línea de comandos de un proceso
-        /// </summary>
-        public static string GetProcessCommandLine(int processId)
-        {
-            try
-            {
-                using (var searcher = new ManagementObjectSearcher(
-                    $"SELECT CommandLine FROM Win32_Process WHERE ProcessId = {processId}"))
-                {
-                    foreach (var obj in searcher.Get())
-                    {
-                        return obj["CommandLine"]?.ToString() ?? string.Empty;
-                    }
-                }
-                return string.Empty;
-            }
-            catch
-            {
-                return string.Empty;
-            }
-        }
-        private static void EnsureBackgroundMonitorStartsWithWindows()
-        {
-            try
-            {
-                string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "autostart_setup.log");
-                File.AppendAllText(logPath, $"[{DateTime.Now}] Configurando inicio automático con Windows\r\n");
-
-                // IMPORTANTE: USAR SOLO UN MÉTODO DE AUTOARRANQUE
-                // Configurar inicio mediante tarea programada (más confiable) y no usar registro
-                bool taskResult = CreateStartupTask();
-                File.AppendAllText(logPath, $"[{DateTime.Now}] Resultado configuración por tarea programada: {taskResult}\r\n");
-
-                // No usar BackgroundMonitorService.InstallAutostart() - para evitar duplicación
-            }
-            catch (Exception ex)
-            {
-                // Registrar error
-            }
-        }
-
-        // Modificar el método CreateStartupTask para usar opciones de ejecución invisibles
-        private static bool CreateStartupTask()
-        {
-            try
-            {
-                string appPath = Application.ExecutablePath;
-                string logPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "startup_task.log");
-
-                // SOLUCIÓN: Verificar si ya existe la tarea programada
-                string checkExistingScript = @"
-try {
-    $taskName = 'ECMCentralMonitor'
-    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-    if ($task -ne $null) {
-        # Verificar la acción y los parámetros para determinar si es necesario actualizar
-        $action = $task.Actions[0]
-        $arguments = $action.Arguments
-        
-        # Verificar si los argumentos ya incluyen /silent
-        if ($arguments -match '/backgroundmonitor /silent') {
-            Write-Output 'La tarea programada ya existe con los parámetros correctos'
-            return $true
-        }
-        else {
-            # Devuelve que la tarea existe pero debe actualizarse
-            Write-Output 'La tarea programada existe pero necesita actualización'
-            return $true
-        }
-    }
-    else {
-        # La tarea no existe
-        Write-Output 'La tarea programada no existe'
-        return $false
-    }
-}
-catch {
-    Write-Output ('Error al verificar tarea programada: ' + $_.Exception.Message)
-    return $false
-}";
-
-                string existingTaskResult = PowerShellHelper.RunPowerShellCommandWithOutput(checkExistingScript);
-                File.AppendAllText(logPath, $"[{DateTime.Now}] Verificación de tarea existente: {existingTaskResult}\r\n");
-
-                // Si la tarea ya está configurada correctamente, no hacer nada
-                if (existingTaskResult.Contains("La tarea programada ya existe con los parámetros correctos"))
-                {
-                    return true;
-                }
-
-                // Script PowerShell para crear/actualizar la tarea programada
-                string psScript = $@"
-try {{
-    $taskName = 'ECMCentralMonitor'
-    $exe = '{appPath.Replace("\\", "\\\\")}'
-    $action = New-ScheduledTaskAction -Execute $exe -Argument '/backgroundmonitor /silent'
-    
-    # Definir UN SOLO disparador para evitar duplicidad
-    # Al inicio de sesión (más común y fiable)
-    $trigger = New-ScheduledTaskTrigger -AtLogon
-    
-    # Configuración optimizada - añadir opción Hidden
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden
-
-    # IMPORTANTE: Usar RunLevel Normal para evitar prompts UAC
-    $principal = New-ScheduledTaskPrincipal -GroupId 'BUILTIN\Users' -RunLevel Normal
-    
-    # Si ya existe la tarea, eliminarla primero
-    Unregister-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue -Confirm:$false
-    
-    # Crear la tarea
-    $task = Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal
-    Write-Output ""Tarea programada creada: $($task.TaskName)""
-    
-    return $true
-}} catch {{
-    Write-Output ""Error: $($_.Exception.Message)""
-    return $false
-}}";
-
-                // Ejecutar PowerShell con elevación (para garantizar permisos)
-                string result = PowerShellHelper.RunPowerShellCommandWithOutput(psScript);
-
-                // Registrar el resultado
-                File.AppendAllText(logPath, $"[{DateTime.Now}] Resultado de creación de tarea: {result}\r\n");
-
-                return result.Contains("creada") || result.Contains("created");
-            }
-            catch (Exception ex)
-            {
-                try
-                {
-                    // Registrar error
-                    string errorPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "task_error.log");
-                    File.AppendAllText(errorPath, $"[{DateTime.Now}] Error al crear tarea: {ex.Message}\r\n{ex.StackTrace}\r\n");
-                }
-                catch { }
-
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Procesa un nuevo archivo PDF detectado en la carpeta
-        /// </summary>
-        private static void ProcessNewPdfFile(string filePath, string logPath)
-        {
-            try
-            {
-                // Esperar a que el archivo esté completamente escrito
-                System.Threading.Thread.Sleep(1000);
-
-                if (File.Exists(filePath))
-                {
-                    // Registrar detección
-                    File.AppendAllText(logPath, $"[{DateTime.Now}] Archivo detectado: {filePath}\r\n");
-
-                    // Verificar si la aplicación ya está en ejecución
-                    Process currentProcess = Process.GetCurrentProcess();
-                    Process[] processes = Process.GetProcessesByName(currentProcess.ProcessName);
-
-                    // Solo lanzar si no hay otra instancia ejecutándose (excepto esta)
-                    if (processes.Length <= 1)
-                    {
-                        // Lanzar una nueva instancia de la aplicación con el archivo
-                        ProcessStartInfo startInfo = new ProcessStartInfo
-                        {
-                            FileName = Application.ExecutablePath,
-                            Arguments = $"/processfile=\"{filePath}\"",
-                            UseShellExecute = true
-                        };
-
-                        Process.Start(startInfo);
-                        File.AppendAllText(logPath, $"[{DateTime.Now}] Aplicación lanzada para procesar: {filePath}\r\n");
-                    }
-                    else
-                    {
-                        // La aplicación ya está en ejecución, enviar notificación
-                        File.AppendAllText(logPath, $"[{DateTime.Now}] Aplicación ya en ejecución. Archivo listo para procesamiento: {filePath}\r\n");
-
-                        // Crear un archivo marcador para que la instancia en ejecución lo detecte
-                        string markerFile = Path.Combine(
-                            VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
-                            "pending_pdf.marker");
-
-                        File.WriteAllText(markerFile, filePath);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al procesar archivo PDF: {ex.Message}");
-                File.AppendAllText(logPath, $"[{DateTime.Now}] ERROR al procesar: {ex.Message}\r\n");
-            }
-        }
-
-        /// <summary>
-        /// Método directo para procesar un archivo PDF específico
-        /// </summary>
-        private static void DirectProcessPdfFile(string filePath)
-        {
-            try
-            {
-                // Verificar que el archivo exista
-                if (!File.Exists(filePath))
-                {
-                    MessageBox.Show(
-                        $"No se encontró el archivo PDF:\n{filePath}",
-                        "Error de procesamiento",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Error);
-                    return;
-                }
-
-                // Registrar evento en log
-                File.AppendAllText(
-                    Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "direct_pdf_process.log"),
-                    $"[{DateTime.Now}] Procesando directamente: {filePath}\r\n");
-
-                Console.WriteLine($"Procesando directamente archivo PDF: {filePath}");
-
-                // Abrir la aplicación principal
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-
-                // Crear y mostrar la pantalla de login
-                LoginForm form = new LoginForm();
-                form.Show();
-
-                // Agregar método para procesar el archivo después de la carga
-                form.FormClosed += (sender, e) =>
-                {
-                    Environment.Exit(0);
-                };
-
-                // Configurar un timer para procesar el archivo después de un breve retraso
-                System.Windows.Forms.Timer timer = new System.Windows.Forms.Timer();
-                timer.Interval = 3000; // 3 segundos
-                timer.Tick += (sender, e) =>
-                {
-                    timer.Stop();
-                    try
-                    {
-                        WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(filePath);
-                        Console.WriteLine("Documento procesado con éxito mediante método directo");
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error al procesar documento: {ex.Message}");
-                    }
-                };
-                timer.Start();
-
-                Application.Run(form);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error en procesamiento directo: {ex.Message}");
-
-                // Como último recurso, mostrar la pantalla tradicional
-                Application.Run(new LoginForm());
-            }
-        }
-        /// <summary>
-        /// Instala un servicio a nivel de sistema para monitorear constantemente la cola de impresión
-        /// </summary>
-        private static void InstallSystemPrintMonitor()
-        {
-            try
-            {
-                // Obtener la ruta de la aplicación
-                string appPath = System.Windows.Forms.Application.ExecutablePath;
-
-                // Crear un servicio de Windows que ejecute nuestra aplicación con /backgroundmonitor
-                string psCommand = $@"
-$serviceName = 'ECMPrintMonitor'
-$displayName = 'ECM Print Monitor Service'
-$binPath = 'wininit.exe /RunCommand ""{appPath}"" /backgroundmonitor /silent'
-
-# Verificar si el servicio ya existe
-$service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
-
-if ($service -eq $null) {{
-    # Crear el servicio
-    New-Service -Name $serviceName -DisplayName $displayName -BinaryPathName $binPath -StartupType Automatic
-    Start-Service -Name $serviceName
-    Write-Output ""Servicio creado y iniciado""
-}} else {{
-    Write-Output ""El servicio ya existe""
-}}
-
-# Como alternativa, crear una tarea programada
-$taskName = 'ECMPrintMonitorTask'
-$trigger = New-ScheduledTaskTrigger -AtStartup
-$action = New-ScheduledTaskAction -Execute '{appPath}' -Argument '/backgroundmonitor /silent'
-
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($task -eq $null) {{
-    Register-ScheduledTask -TaskName $taskName -Trigger $trigger -Action $action -RunLevel Highest -User 'SYSTEM'
-    Write-Output ""Tarea programada creada""
-}} else {{
-    Write-Output ""La tarea programada ya existe""
-}}
-";
-
-                // Ejecutar con PowerShell elevado
-                ProcessStartInfo psi = new ProcessStartInfo
-                {
-                    FileName = "powershell.exe",
-                    Arguments = $"-ExecutionPolicy Bypass -Command \"{psCommand}\"",
-                    UseShellExecute = true,
-                    Verb = "runas", // Ejecutar como administrador
-                    CreateNoWindow = false
-                };
-
-                Process.Start(psi);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al instalar servicio de monitoreo: {ex.Message}");
-            }
-        }
-        private static void ProcessCommandLineArguments(string[] args)
-        {
-            string argument = args[0].ToLower();
-            // Agregar logs explícitos para diagnóstico
-            Console.WriteLine($"Procesando argumento de línea de comandos: '{argument}'");
-
-            // Guardar en un archivo para diagnóstico (opcional)
-            File.AppendAllText(
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "cmd_args.log"),
-                $"[{DateTime.Now}] Procesando argumento: {argument}\r\n");
-
-            if (argument.StartsWith("/processfile="))
-            {
-                // Extraer la ruta del archivo
-                string filePath = argument.Substring(13).Trim('"');
-                Console.WriteLine($"Procesando archivo PDF generado por Bullzip: {filePath}");
-
-                // Verificar si la ruta es relativa (solo nombre de archivo)
-                if (!Path.IsPathRooted(filePath))
-                {
-                    // Convertir a ruta absoluta usando la carpeta de salida
-                    filePath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, filePath);
-                }
-
-                // Guardar para uso posterior en caso de login
-                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
-                File.WriteAllText(tempFile, filePath);
-                Console.WriteLine($"Archivo pendiente guardado en: {tempFile}");
-
-                // Método directo para procesar el archivo
-                DirectProcessPdfFile(filePath);
+                LogToFile("=== FIN COMANDO /setup ===");
                 return;
             }
-            else if (argument == "/login")
+            else if (argument == "/testpdfcreator")
             {
-                // NUEVO: Iniciar la aplicación normalmente y verificar si hay archivos pendientes
-                LoginForm loginForm = new LoginForm();
+                LogToFile("=== COMANDO /testpdfcreator ===");
 
-                // Verificar si hay un archivo pendiente al cargar
-                string markerPath = Path.Combine(
-                    VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH,
-                    "last_bullzip_file.txt");
-
-                if (File.Exists(markerPath))
+                if (!Directory.Exists(PDFCreatorManager.OUTPUT_FOLDER))
                 {
-                    try
-                    {
-                        string pendingFile = File.ReadAllText(markerPath).Trim();
-
-                        // Registrar para diagnóstico
-                        Console.WriteLine($"Encontrado archivo pendiente: {pendingFile}");
-
-                        // Variable para controlar ejecución única del handler
-                        bool processed = false;
-
-                        // Definir el handler con otro nombre para evitar conflicto con 'args'
-                        EventHandler idleHandler = null;
-                        idleHandler = (sender, eventArgs) =>
-                        {
-                            if (!processed)
-                            {
-                                processed = true;
-                                Application.Idle -= idleHandler;
-
-                                try
-                                {
-                                    if (File.Exists(pendingFile))
-                                    {
-                                        // Procesar el archivo
-                                        WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(pendingFile);
-                                        Console.WriteLine($"Archivo procesado exitosamente: {pendingFile}");
-
-                                        // Eliminar el marcador
-                                        try { File.Delete(markerPath); } catch { }
-                                    }
-                                }
-                                catch (Exception procEx)
-                                {
-                                    Console.WriteLine($"Error al procesar archivo pendiente: {procEx.Message}");
-                                }
-                            }
-                        };
-
-                        Application.Idle += idleHandler;
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error al leer archivo pendiente: {ex.Message}");
-                    }
+                    Directory.CreateDirectory(PDFCreatorManager.OUTPUT_FOLDER);
+                    LogToFile($"Carpeta de salida creada: {PDFCreatorManager.OUTPUT_FOLDER}");
                 }
 
-                Application.Run(loginForm);
-                return;
-            }
+                string testTextFile = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "test_pdfcreator.txt");
 
-            else if (argument == "/installprinter")
-            {
-                // Instalar impresora con permisos elevados (con diálogo)
-                ECMVirtualPrinter.InstallPrinterAsync(false).Wait();
-                return; // Salir después de instalar
-            }
-            else if (argument == "/installprintersilent")
-            {
-                // Instalar impresora silenciosamente (sin diálogos)
-                ECMVirtualPrinter.InstallPrinterAsync(true).Wait();
-                return; // Salir después de instalar
-            }
-            //else if (argument == "/installscanner")
-            //{
-            //    // Instalar escáner con permisos elevados
-            //    ECMVirtualPrinter.InstallScannerDriverAsync().Wait();
-            //    return; // Salir después de instalar
-            //}
-            // else if (argument == "/backgroundmonitor")
-            // {
-            //     // Verificar flags adicionales
-            //     bool silentMode = args.Any(a => a.ToLower() == "/silent");
-            //     bool lowImpactMode = args.Any(a => a.ToLower() == "/lowimpact");
-            //     bool synchronizedMode = args.Any(a => a.ToLower() == "/waitforsync"); // Añadir esta línea
+                string testText = $@"=== ARCHIVO DE PRUEBA ECM CENTRAL - PDFCREATOR ===
+Fecha: {DateTime.Now}
+Carpeta: {PDFCreatorManager.OUTPUT_FOLDER}
+Aplicación: {Application.ExecutablePath}
+Impresora: ECM Central Printer
 
-            //     Console.WriteLine("Iniciando modo de monitor en segundo plano" +
-            //         (silentMode ? " silenciosamente" : "") +
-            //         (lowImpactMode ? " (impacto reducido)" : "") +
-            //         (synchronizedMode ? " (modo sincronización)" : ""));
+INSTRUCCIONES PARA PROBAR:
+1. Presiona Ctrl+P para imprimir
+2. Selecciona 'ECM Central Printer' como impresora
+3. Haz clic en 'Imprimir'
+4. El PDF se generará automáticamente
+5. ECM Central debería abrirse automáticamente
 
-            //     // En modo de bajo impacto, limitamos la frecuencia de log
-            //     if (lowImpactMode)
-            //     {
-            //         WatcherLogger.SetLoggingInterval(TimeSpan.FromMinutes(30));
-            //     }
+¡PDFCreator no requiere configuración manual!
 
-            //     // Registrar en init_log.txt
-            //     string initLogPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.GetLogFolderPath(), "init_log.txt");
-            //     File.AppendAllText(initLogPath,
-            //         $"[{DateTime.Now}] INICIO DE MONITOR DE FONDO" +
-            //         (synchronizedMode ? " (modo sincronización)" : "") +
-            //         (silentMode ? " (modo silencioso)" : "") + "\r\n");
+=== FIN ARCHIVO DE PRUEBA ===";
 
-            //     // Crear inmediatamente el archivo de marcador
-            //     string markerFilePath = Path.Combine(Path.GetTempPath(), "ecm_monitor_running.marker");
-            //     File.WriteAllText(markerFilePath, Process.GetCurrentProcess().Id.ToString());
+                File.WriteAllText(testTextFile, testText);
+                LogToFile($"Archivo de prueba creado: {testTextFile}");
 
-            //     // Registrar eliminación del archivo al cerrar
-            //     AppDomain.CurrentDomain.ProcessExit += (s, e) => {
-            //         try { if (File.Exists(markerFilePath)) File.Delete(markerFilePath); } catch { }
-            //     };
-
-            //     WatcherLogger.LogActivity("Iniciando modo de monitor en segundo plano" +
-            //         (silentMode ? " silenciosamente" : "") +
-            //         (synchronizedMode ? " con sincronización" : ""));
-
-            //     try
-            //     {
-            //         // Configurar la carpeta de salida de la impresora
-            //         ConfigurePrinterOutputFolder();
-
-            //         // Iniciar el servicio de monitoreo - MODIFICADO PARA SINCRONIZACIÓN
-            //         if (synchronizedMode)
-            //         {
-            //             WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.StartAndNotify();
-            //         }
-            //         else
-            //         {
-            //             WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Start();
-            //         }
-
-            //         // En modo silencioso, evitar mostrar ventanas
-            //         if (silentMode)
-            //         {
-            //             // Crear un formulario invisible para mantener la aplicación en ejecución
-            //             Form invisibleForm = new Form
-            //             {
-            //                 WindowState = FormWindowState.Minimized,
-            //                 ShowInTaskbar = false,
-            //                 FormBorderStyle = FormBorderStyle.None,
-            //                 Size = new System.Drawing.Size(1, 1),
-            //                 Opacity = 0
-            //             };
-
-            //             // Asegurarse que no se muestre ni siquiera por un momento
-            //             invisibleForm.Load += (sender, e) => invisibleForm.Hide();
-
-            //             // Usar el método existente para mostrar el ícono en la bandeja del sistema
-            //             using (NotifyIcon trayIcon = FormInteraction.ShowTrayIcon(
-            //                 "ECM Central - Monitor de impresión"))
-            //             {
-            //                 // Mantener la aplicación en ejecución
-            //                 Application.Run(invisibleForm);
-            //             }
-            //         }
-            //         else
-            //         {
-            //             // Modo normal con interfaz de usuario
-            //             // Crear un formulario invisible para mantener la aplicación en ejecución
-            //             using (Form invisibleForm = new Form())
-            //             {
-            //                 invisibleForm.WindowState = FormWindowState.Minimized;
-            //                 invisibleForm.ShowInTaskbar = false;
-            //                 invisibleForm.FormBorderStyle = FormBorderStyle.None;
-            //                 invisibleForm.Opacity = 0;
-
-            //                 // Añadir ícono en la bandeja del sistema
-            //                 using (NotifyIcon trayIcon = new NotifyIcon())
-            //                 {
-            //                     trayIcon.Icon = System.Drawing.SystemIcons.Application;
-            //                     trayIcon.Text = "ECM Central - Monitor de impresión";
-            //                     trayIcon.Visible = true;
-
-            //                     // Menú contextual
-            //                     trayIcon.ContextMenuStrip = new ContextMenuStrip();
-            //                     trayIcon.ContextMenuStrip.Items.Add("Abrir aplicación", null, (s, e) => {
-            //                         Process.Start(new ProcessStartInfo
-            //                         {
-            //                             FileName = Application.ExecutablePath,
-            //                             UseShellExecute = true
-            //                         });
-            //                     });
-            //                     trayIcon.ContextMenuStrip.Items.Add("Comprobar estado", null, (s, e) => {
-            //                         WinFormsApiClient.VirtualWatcher.WatcherLogger.LogSystemDiagnostic();
-            //                         MessageBox.Show("Diagnóstico del sistema registrado en los logs", "ECM Central",
-            //                             MessageBoxButtons.OK, MessageBoxIcon.Information);
-            //                     });
-            //                     trayIcon.ContextMenuStrip.Items.Add("Salir", null, (s, e) => {
-            //                         WinFormsApiClient.VirtualWatcher.BackgroundMonitorService.Stop();
-            //                         Application.Exit();
-            //                     });
-
-            //                     // Mantener la aplicación en ejecución
-            //                     Application.Run(invisibleForm);
-            //                 }
-            //             }
-            //         }
-            //     }
-            //     catch (Exception ex)
-            //     {
-            //         WatcherLogger.LogError("Error al iniciar monitor de segundo plano", ex);
-            //         if (!silentMode)
-            //         {
-            //             MessageBox.Show($"Error al iniciar el monitor en segundo plano: {ex.Message}",
-            //                 "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            //         }
-            //     }
-            //     return;
-            // }
-            else if (argument.StartsWith("/silentprint="))
-            {
-                // Extraer la ruta del archivo
-                string filePath = argument.Substring(13).Trim('"');
-                Console.WriteLine($"Procesando archivo PDF en modo silencioso: {filePath}");
-
-                // Registrar en el log para diagnóstico
-                File.AppendAllText(
-                    Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "silent_print.log"),
-                    $"[{DateTime.Now}] Iniciando impresión silenciosa: {filePath}\r\n");
+                MessageBox.Show($"Archivo de prueba creado: {testTextFile}\n\n" +
+                    "PASOS PARA PROBAR:\n" +
+                    "1. Se abrirá el archivo .txt\n" +
+                    "2. Presiona Ctrl+P\n" +
+                    "3. Selecciona 'ECM Central Printer'\n" +
+                    "4. Haz clic en 'Imprimir'\n" +
+                    "5. ECM Central debería abrirse automáticamente\n\n" +
+                    "NO necesitas configurar nada manualmente.",
+                    "Test de PDFCreator", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
                 try
                 {
-                    // Iniciar el monitor de background si no está en ejecución
-                    if (!BackgroundMonitorService._isRunning)
-                    {
-                        // Inicializar sin mostrar interfaz visible
-                        Console.WriteLine("Iniciando monitor en segundo plano para procesamiento silencioso");
-
-                        // Configurar carpeta y automatización
-                        ConfigurePrinterOutputFolder();
-
-                        // Iniciar el servicio
-                        BackgroundMonitorService.Start();
-
-                        // Esperar un momento para que se inicie completamente
-                        System.Threading.Thread.Sleep(1000);
-                    }
-
-                    // Procesar directamente el archivo PDF
-                    if (File.Exists(filePath))
-                    {
-                        // Esperar a que el archivo esté completamente escrito
-                        System.Threading.Thread.Sleep(800);
-
-                        // Procesar el archivo directamente sin abrir UI
-                        WinFormsApiClient.VirtualWatcher.DocumentProcessor.Instance.ProcessNewPrintJob(filePath);
-
-                        // Salir silenciosamente una vez procesado
-                        Environment.Exit(0);
-                    }
-                    else
-                    {
-                        File.AppendAllText(
-                            Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "silent_print_error.log"),
-                            $"[{DateTime.Now}] ERROR: Archivo no encontrado: {filePath}\r\n");
-                        Environment.Exit(1);
-                    }
+                    Process.Start(testTextFile);
+                    LogToFile("Archivo de prueba abierto");
                 }
                 catch (Exception ex)
                 {
-                    // Registrar error y salir
-                    File.AppendAllText(
-                        Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "silent_print_error.log"),
-                        $"[{DateTime.Now}] Error en procesamiento silencioso: {ex.Message}\r\n{ex.StackTrace}\r\n");
-                    Environment.Exit(1);
+                    LogToFile($"Error abriendo archivo: {ex.Message}");
                 }
+
+                LogToFile("=== FIN COMANDO /testpdfcreator ===");
+                return;
+            }
+            else if (argument == "/pdfcreatorlog")
+            {
+                LogToFile("=== COMANDO /pdfcreatorlog ===");
+
+                string diagPath = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "pdfcreator_diagnosis.txt");
+
+                if (File.Exists(diagPath))
+                {
+                    string logContent = File.ReadAllText(diagPath);
+                    MessageBox.Show($"Diagnóstico de PDFCreator:\n\n{logContent}", "PDFCreator Diagnosis",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    LogToFile($"Contenido del diagnóstico:\n{logContent}");
+                }
+                else
+                {
+                    MessageBox.Show("No se encontró el diagnóstico. Ejecuta /diagnose primero.", "Log no encontrado",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+
+                LogToFile("=== FIN COMANDO /pdfcreatorlog ===");
+                return;
+            }
+
+            else if (argument == "/clean")
+            {
+                LogToFile("=== COMANDO /clean ===");
+                Console.WriteLine("=== INICIANDO LIMPIEZA ===");
+
+                int itemsDeleted = 0;
+                var resultados = new List<string>();
+
+                try
+                {
+                    // Limpiar archivos temporales (SIN archivos de monitor)
+                    string[] tempFiles = {
+                            Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "pdfcreator_diagnosis.txt"),
+                            Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "print_jobs.log"),
+                            Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "print_errors.log"),
+                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_commands.log"),
+                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_error_log.txt"),
+                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Desktop), "ecm_full_log.txt")
+                        };
+
+                    foreach (string file in tempFiles)
+                    {
+                        try
+                        {
+                            if (File.Exists(file))
+                            {
+                                File.Delete(file);
+                                itemsDeleted++;
+                                resultados.Add($"✓ Eliminado: {Path.GetFileName(file)}");
+                                Console.WriteLine($"Archivo eliminado: {file}");
+                            }
+                            else
+                            {
+                                resultados.Add($"• No existe: {Path.GetFileName(file)}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            resultados.Add($"✗ Error eliminando {Path.GetFileName(file)}: {ex.Message}");
+                            Console.WriteLine($"Error eliminando {file}: {ex.Message}");
+                        }
+                    }
+
+                    // Limpiar procesos colgados
+                    var processes = Process.GetProcessesByName("WinFormsApiClient");
+                    int processesKilled = 0;
+
+                    foreach (var proc in processes)
+                    {
+                        try
+                        {
+                            if (proc.Id != Process.GetCurrentProcess().Id)
+                            {
+                                proc.Kill();
+                                processesKilled++;
+                                Console.WriteLine($"Proceso terminado: {proc.Id}");
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"Error terminando proceso {proc.Id}: {ex.Message}");
+                        }
+                    }
+
+                    if (processesKilled > 0)
+                    {
+                        resultados.Add($"✓ Terminados {processesKilled} procesos");
+                    }
+
+                    // Mostrar resultados
+                    string message = $"Limpieza completada.\n\n" +
+                        $"Elementos procesados: {itemsDeleted}\n\n" +
+                        string.Join("\n", resultados.Take(10)) +
+                        (resultados.Count > 10 ? $"\n... y {resultados.Count - 10} más" : "");
+
+                    MessageBox.Show(message, "Limpieza completada", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Console.WriteLine($"=== LIMPIEZA COMPLETADA - {itemsDeleted} elementos procesados ===");
+                }
+                catch (Exception ex)
+                {
+                    LogToFile($"ERROR en limpieza: {ex.Message}");
+                    MessageBox.Show($"Error durante la limpieza: {ex.Message}",
+                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+
+                LogToFile("=== FIN COMANDO /clean ===");
                 return;
             }
             else if (argument.StartsWith("/print:"))
             {
-                // Extraer la ruta del archivo
-                string filePath = argument.Substring(7);
+                LogToFile("=== COMANDO /print ===");
 
-                // Quitar comillas si existen
-                if (filePath.StartsWith("\"") && filePath.EndsWith("\""))
+                string filePath = null;
+
+                // Caso 1: /print:"C:\ruta\archivo.pdf" (todo en un solo argumento)
+                if (argument.Length > "/print:".Length)
                 {
-                    filePath = filePath.Substring(1, filePath.Length - 2);
+                    filePath = argument.Substring("/print:".Length).Trim('"');
+                }
+                // Caso 2: /print: "C:\ruta\archivo.pdf" (dos argumentos)
+                else if (args.Length > 1)
+                {
+                    filePath = args[1].Trim('"');
                 }
 
-                Console.WriteLine($"Ruta de archivo extraída: {filePath}");
+                LogToFile($"Archivo a procesar RAW: '{filePath}'");
+
+                if (string.IsNullOrEmpty(filePath))
+                {
+                    LogToFile("ERROR: Ruta de archivo vacía después de procesar");
+                    MessageBox.Show("Error: No se proporcionó archivo para procesar", "Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    LogToFile("=== FIN COMANDO /print ===");
+                    return;
+                }
+
+                int maxRetries = 20;
+                int delayMs = 3000;
+                bool fileReady = false;
+
+                for (int i = 0; i < maxRetries; i++)
+                {
+                    if (File.Exists(filePath))
+                    {
+                        fileReady = true;
+                        break;
+                    }
+                    await Task.Delay(delayMs);
+                }
+
+                if (!fileReady)
+                {
+                    LogToFile($"ERROR: Archivo no encontrado tras {maxRetries} intentos: {filePath}");
+                    MessageBox.Show($"Archivo no encontrado: {filePath}", "Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    LogToFile("=== FIN COMANDO /print ===");
+                    return;
+                }
 
                 if (File.Exists(filePath))
                 {
-                    Console.WriteLine($"Archivo encontrado, iniciando formulario de login con archivo pendiente: {filePath}");
+                    LogToFile($"Archivo existe, procesando: {filePath}");
 
-                    // Guardar el archivo en una ubicación persistente si es necesario
-                    string savedFilePath = filePath;
+                    try
+                    {
+                        await VirtualPrinterService.InitializeAsync();
+                        Application.EnableVisualStyles();
+                        Application.SetCompatibleTextRenderingDefault(false);
 
-                    // Crear formulario de login con el archivo pendiente
-                    LoginForm loginForm = new LoginForm(savedFilePath);
-                    Application.Run(loginForm);
-                    return;
+                        if (string.IsNullOrEmpty(AppSession.Current.AuthToken))
+                        {
+                            LogToFile("No hay sesión activa, abriendo LoginForm");
+                            var loginForm = new LoginForm(filePath);
+                            Application.Run(loginForm);
+                        }
+                        else
+                        {
+                            LogToFile("Sesión activa, abriendo FormularioForm directamente");
+                            var formularioForm = new FormularioForm();
+                            formularioForm.Shown += (s, e) =>
+                            {
+                                formularioForm.EstablecerArchivoSeleccionado(filePath);
+                            };
+                            Application.Run(formularioForm);
+                        }
+
+                        LogToFile("Trabajo de impresión procesado correctamente");
+                    }
+                    catch (Exception ex)
+                    {
+                        LogToFile($"Error procesando archivo: {ex.Message}");
+                        MessageBox.Show($"Error procesando archivo: {ex.Message}", "Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
                 }
                 else
                 {
-                    Console.WriteLine($"ERROR: Archivo no encontrado: {filePath}");
-                    MessageBox.Show($"No se encontró el archivo: {filePath}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    // El archivo no existe, iniciar normal
-                    Application.Run(new LoginForm());
-                    return;
+                    LogToFile($"ERROR: Archivo no encontrado: {filePath}");
+                    MessageBox.Show($"Archivo no encontrado: {filePath}", "Error",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
+
+                LogToFile("=== FIN COMANDO /print ===");
+                return;
             }
-            else if (argument == "/install-autostart")
+            else if (argument == "/createtest")
             {
-                Console.WriteLine("Instalando autostart y configurando sistema completo...");
+                LogToFile("=== COMANDO /createtest ===");
 
-                // 1. Instalar autostart normal
-                bool success = BackgroundMonitorService.InstallAutostart();
-                bool alreadyInstalled = BackgroundMonitorService.IsInstalledForAutostart();
-
-                if (alreadyInstalled)
+                if (!Directory.Exists(PDFCreatorManager.OUTPUT_FOLDER))
                 {
-                    Console.WriteLine("Autostart ya instalado, verificando configuración completa...");
-
-                    // AQUÍ ES DONDE FALTA - FORZAR LA CONFIGURACIÓN COMPLETA
-                    ForceCompleteSystemConfiguration();
-
-                    if (!ECMVirtualPrinter.IsPrinterInstalled())
-                    {
-                        Console.WriteLine("Impresora no detectada, iniciando instalación...");
-                        Task.Run(async () => await PrinterInstaller.InstallPrinterAsync(true)).Wait();
-                    }
+                    Directory.CreateDirectory(PDFCreatorManager.OUTPUT_FOLDER);
+                    LogToFile($"Carpeta de salida creada: {PDFCreatorManager.OUTPUT_FOLDER}");
                 }
 
-                if (success)
+                string testTextFile = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "test_document.txt");
+
+                string testText = $@"=== ARCHIVO DE PRUEBA ECM CENTRAL ===
+Fecha: {DateTime.Now}
+Carpeta: {PDFCreatorManager.OUTPUT_FOLDER}
+Aplicación: {Application.ExecutablePath}
+
+INSTRUCCIONES PARA PROBAR:
+1. Presiona Ctrl+P para imprimir
+2. Selecciona 'ECM Central Printer' como impresora
+3. Haz clic en 'Imprimir'
+4. ECM Central debería abrirse automáticamente
+5. Deberías ver el LoginForm
+
+Si todo funciona correctamente, verás la aplicación ECM Central abrirse automáticamente después de imprimir.
+
+=== FIN ARCHIVO DE PRUEBA ===";
+
+                File.WriteAllText(testTextFile, testText);
+                LogToFile($"Archivo de prueba creado: {testTextFile}");
+
+                MessageBox.Show($"Archivo de prueba creado: {testTextFile}\n\n" +
+                    "PASOS PARA PROBAR:\n" +
+                    "1. Se abrirá el archivo .txt\n" +
+                    "2. Presiona Ctrl+P\n" +
+                    "3. Selecciona 'ECM Central Printer'\n" +
+                    "4. Haz clic en 'Imprimir'\n" +
+                    "5. ECM Central debería abrirse automáticamente\n\n" +
+                    "Revisa el log 'ecm_full_log.txt' en Desktop para ver el progreso.",
+                    "Test de PDFCreator", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                try
                 {
-                    Console.WriteLine("Autostart instalado/verificado correctamente");
-                    MessageBox.Show("El monitor se iniciará automáticamente con Windows.", "Autostart configurado", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Process.Start(testTextFile);
+                    LogToFile("Archivo de prueba abierto");
+                }
+                catch (Exception ex)
+                {
+                    LogToFile($"Error abriendo archivo: {ex.Message}");
+                }
+
+                LogToFile("=== FIN COMANDO /createtest ===");
+                return;
+            }
+
+            else if (argument == "/testdirect")
+            {
+                LogToFile("=== COMANDO /testdirect ===");
+                string testFile = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "test.pdf");
+
+                if (File.Exists(testFile))
+                {
+                    LogToFile($"Archivo de prueba encontrado: {testFile}");
+                    Application.EnableVisualStyles();
+                    Application.SetCompatibleTextRenderingDefault(false);
+
+                    var formularioForm = new FormularioForm();
+                    formularioForm.EstablecerArchivoSeleccionado(testFile);
+
+                    Application.Run(formularioForm);
+                    LogToFile("Test directo completado");
                 }
                 else
                 {
-                    Console.WriteLine("Error instalando autostart");
-                    MessageBox.Show("Error al configurar el autostart", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    LogToFile($"ERROR: Archivo de prueba no encontrado: {testFile}");
+                    MessageBox.Show($"Archivo de prueba no encontrado: {testFile}",
+                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
+
+                LogToFile("=== FIN COMANDO /testdirect ===");
                 return;
             }
-            else if (argument == "/diagnose-bullzip")
+            else if (argument == "/batchlog")
             {
-                Console.WriteLine("=== DIAGNÓSTICO DE BULLZIP ===");
+                LogToFile("=== COMANDO /batchlog ===");
 
-                // Verificar si Bullzip está instalado
-                bool bullzipExists = false;
-                foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
+                string batchLogPath = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "batch_debug.log");
+
+                if (File.Exists(batchLogPath))
                 {
-                    if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
+                    string logContent = File.ReadAllText(batchLogPath);
+                    MessageBox.Show($"Log del batch:\n\n{logContent}", "Batch Debug Log",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    LogToFile($"Contenido del batch log:\n{logContent}");
+                }
+                else
+                {
+                    MessageBox.Show("No se encontró el log del batch.", "Log no encontrado",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+
+                LogToFile("=== FIN COMANDO /batchlog ===");
+                return;
+            }
+            else if (argument == "/checkconfig")
+            {
+                LogToFile("=== COMANDO /checkconfig ===");
+
+                try
+                {
+                    string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bullzip", "PDF Printer", "settings.ini");
+                    string batchPath = Path.Combine(PDFCreatorManager.OUTPUT_FOLDER, "ecm_process.bat");
+
+                    string report = "=== CONFIGURACIÓN ACTUAL ===\n\n";
+
+                    // Verificar settings.ini
+                    if (File.Exists(settingsPath))
                     {
-                        Console.WriteLine($"Bullzip encontrado: {printer}");
-                        bullzipExists = true;
+                        report += "✓ settings.ini EXISTE\n";
+                        string content = File.ReadAllText(settingsPath);
+
+                        if (content.Contains("RunOnceFile"))
+                            report += "✓ RunOnceFile configurado\n";
+                        else
+                            report += "✗ RunOnceFile NO configurado\n";
+
+                        if (content.Contains("RunOnSuccess"))
+                            report += "✓ RunOnSuccess configurado\n";
+                        else
+                            report += "✗ RunOnSuccess NO configurado\n";
                     }
-                }
+                    else
+                    {
+                        report += "✗ settings.ini NO EXISTE\n";
+                    }
 
-                if (!bullzipExists)
+                    // Verificar batch
+                    if (File.Exists(batchPath))
+                    {
+                        report += "✓ Script batch EXISTE\n";
+                        report += $"Ubicación: {batchPath}\n";
+                    }
+                    else
+                    {
+                        report += "✗ Script batch NO EXISTE\n";
+                    }
+
+                    // Verificar registro
+                    try
+                    {
+                        using (var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Bullzip\PDF Printer"))
+                        {
+                            if (key != null)
+                            {
+                                report += "✓ Registro de usuario EXISTE\n";
+                                string runOnceFile = key.GetValue("RunOnceFile")?.ToString();
+                                string runOnSuccessFile = key.GetValue("RunOnSuccessFile")?.ToString();
+
+                                report += $"RunOnceFile: {runOnceFile ?? "NO CONFIGURADO"}\n";
+                                report += $"RunOnSuccessFile: {runOnSuccessFile ?? "NO CONFIGURADO"}\n";
+                            }
+                            else
+                            {
+                                report += "✗ Registro de usuario NO EXISTE\n";
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        report += $"✗ Error leyendo registro: {ex.Message}\n";
+                    }
+
+                    LogToFile($"Reporte de configuración:\n{report}");
+                    MessageBox.Show(report, "Configuración Actual", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
                 {
-                    Console.WriteLine("PROBLEMA: Bullzip NO está instalado");
-                    Console.WriteLine("Ejecutando instalación...");
-                    bool result = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
-                    Console.WriteLine($"Resultado instalación: {result}");
+                    LogToFile($"Error en checkconfig: {ex.Message}");
+                    MessageBox.Show($"Error verificando configuración: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
 
-                // Verificar archivos necesarios
-                string batchPath = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "MoverPDFs.bat");
-                Console.WriteLine($"MoverPDFs.bat existe: {File.Exists(batchPath)}");
-
-                if (!File.Exists(batchPath))
-                {
-                    Console.WriteLine("Creando MoverPDFs.bat...");
-                    VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
-                    Console.WriteLine($"Creado: {File.Exists(batchPath)}");
-                }
-
-                // Verificar configuración
-                string configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Bullzip", "PDF Printer", "settings.ini");
-                Console.WriteLine($"Configuración Bullzip existe: {File.Exists(configPath)}");
-
-                Console.WriteLine("=== FIN DIAGNÓSTICO ===");
+                LogToFile("=== FIN COMANDO /checkconfig ===");
                 return;
             }
-            else if (argument == "/force-bullzip-setup")
+            else
             {
-                ForceCompleteBullzipSetup();
-                return;
-            }
-        } // Cierre del método ProcessCommandLineArguments
-        private static void ForceCompleteBullzipSetup()
-{
-    try
-    {
-        Console.WriteLine("=== FORZANDO CONFIGURACIÓN COMPLETA DE BULLZIP ===");
-        
-        // 1. Verificar si Bullzip está instalado
-        bool bullzipExists = false;
-        foreach (string printer in System.Drawing.Printing.PrinterSettings.InstalledPrinters)
-        {
-            if (printer.Contains("Bullzip") || printer.Contains("PDF Printer"))
-            {
-                bullzipExists = true;
-                Console.WriteLine($"Bullzip encontrado: {printer}");
-                break;
+                LogToFile($"Argumento no reconocido: {argument}");
+                LogToFile("Iniciando aplicación normalmente");
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new LoginForm());
             }
         }
-        
-        // 2. Si no existe, intentar instalarlo
-        if (!bullzipExists)
-        {
-            Console.WriteLine("Bullzip no encontrado, ejecutando instalación...");
-            
-            // Método 1: Usar ForceBullzipSetup
-            bool setupResult = VirtualPrinter.PDFDialogAutomation.ForceBullzipSetup();
-            Console.WriteLine($"Resultado ForceBullzipSetup: {setupResult}");
-            
-            // Método 2: Usar InitBullzipAtStartup
-            bool initResult = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
-            Console.WriteLine($"Resultado InitBullzipAtStartup: {initResult}");
-        }
-        
-        // 3. Configurar Bullzip existente
-        bool configResult = VirtualPrinter.VirtualPrinterCore.ConfigureBullzipPrinter();
-        Console.WriteLine($"Resultado configuración: {configResult}");
-        
-        // 4. Crear archivos batch
-        VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
-        Console.WriteLine("MoverPDFs.bat creado");
-        
-        // 5. Configurar monitor para Bullzip
-        bool monitorResult = VirtualPrinter.VirtualPrinterCore.EnsureMonitorForBullzip();
-        Console.WriteLine($"Resultado monitor Bullzip: {monitorResult}");
-        
-        Console.WriteLine("=== CONFIGURACIÓN COMPLETA FINALIZADA ===");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"Error en configuración completa: {ex.Message}");
     }
 }
-        // AGREGAR EL MÉTODO DENTRO DE LA CLASE Program
-        private static void ForceCompleteSystemConfiguration()
-        {
-            try
-            {
-                Console.WriteLine("=== INICIANDO CONFIGURACIÓN COMPLETA DEL SISTEMA ===");
-                
-                // 1. Forzar inicialización de Bullzip (método existente)
-                Console.WriteLine("1. Verificando e instalando Bullzip...");
-                bool bullzipResult = VirtualPrinter.PDFDialogAutomation.InitBullzipAtStartup();
-                Console.WriteLine($"   Resultado Bullzip: {bullzipResult}");
-                
-                // 2. Configurar Bullzip (método existente)
-                Console.WriteLine("2. Configurando Bullzip...");
-                bool configResult = VirtualPrinter.VirtualPrinterCore.ConfigureBullzipPrinter();
-                Console.WriteLine($"   Resultado configuración: {configResult}");
-                
-                // 3. Crear archivo batch (método existente)
-                Console.WriteLine("3. Creando MoverPDFs.bat...");
-                VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
-                Console.WriteLine("   MoverPDFs.bat creado");
-                
-                // 4. Asegurar carpeta de salida
-                Console.WriteLine("4. Verificando carpeta de salida...");
-                VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
-                Console.WriteLine("   Carpeta verificada");
-                
-                // 5. Forzar configuración del monitor para Bullzip
-                Console.WriteLine("5. Configurando monitor para Bullzip...");
-                bool monitorResult = VirtualPrinter.VirtualPrinterCore.EnsureMonitorForBullzip();
-                Console.WriteLine($"   Resultado monitor: {monitorResult}");
-                
-                Console.WriteLine("=== CONFIGURACIÓN COMPLETA FINALIZADA ===");
-                
-                // Crear archivo de estado para verificar que se ejecutó
-                string statusFile = Path.Combine(VirtualPrinter.VirtualPrinterCore.FIXED_OUTPUT_PATH, "system_configured.marker");
-                File.WriteAllText(statusFile, $"Sistema configurado completamente el {DateTime.Now}");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error en configuración completa: {ex.Message}");
-            }
-        }
-
-        // AGREGAR EL MÉTODO ConfigurePrinterOutputFolder QUE FALTA
-        private static void ConfigurePrinterOutputFolder()
-        {
-            try
-            {
-                // Asegurar que existe la carpeta de salida
-                VirtualPrinter.VirtualPrinterCore.EnsureOutputFolderExists();
-                
-                // Crear el archivo batch si no existe
-                VirtualPrinter.PDFDialogAutomation.CreateBackupBatchFile();
-                
-                Console.WriteLine("Carpeta de salida de impresora configurada correctamente");
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al configurar carpeta de salida: {ex.Message}");
-            }
-        }
-    } // Cierre de la clase Program
-} // Cierre del namespace

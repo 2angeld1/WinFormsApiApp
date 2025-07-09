@@ -9,8 +9,11 @@ using System.Linq;
 using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using WinFormsApiClient.NewVirtualPrinter;
+
 namespace WinFormsApiClient
 {
     public partial class LoginForm : MaterialForm
@@ -20,6 +23,7 @@ namespace WinFormsApiClient
         public LoginForm() : this(null)
         {
         }
+
         public LoginForm(string filePath)
         {
             InitializeComponent();
@@ -27,113 +31,84 @@ namespace WinFormsApiClient
             // Establecer el icono del formulario usando el icono global
             this.Icon = AppIcon.DefaultIcon;
 
-            // Aplicar el tema claro del ThemeManager
+            // Aplicar el tema oscuro del ThemeManager
             ThemeManager.ApplyDarkTheme(this);
 
-            // Guardar el archivo pendiente
+            // Solo guardar el archivo pendiente
             pendingFilePath = filePath;
-            if (!string.IsNullOrEmpty(pendingFilePath))
-            {
-                // Guardar en un archivo temporal para recuperarlo si es necesario
-                string tempFile = Path.Combine(Path.GetTempPath(), "ECM_pending_file.txt");
-                File.WriteAllText(tempFile, pendingFilePath);
-                Console.WriteLine($"Archivo pendiente guardado en: {tempFile}");
-            }
-
-            this.Load += new EventHandler(LoginForm_Load);
         }
 
         private async void LoginForm_Load(object sender, EventArgs e)
         {
-            // Mantener solo el archivo pendiente que se pasó al constructor
-            // y eliminar toda la lógica de búsqueda adicional
-
-            // Asegúrate de que la contraseña esté oculta por defecto
-            this.passwordTextBox.Password = true;
-
-            // Limpiar cualquier sesión anterior
-            AppSession.Current.Clear();
-
-            // Intentar instalar silenciosamente la impresora virtual
-            await InstallVirtualPrinterAsync();
-
-            // Cargar la imagen de ilustración
-            LoadIllustrationImage();
-
-            // Configurar algunos detalles visuales adicionales
-            ConfigureVisualElements();
-
-            // Procesar solo el archivo pendiente explícitamente pasado al constructor
-            if (!string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath))
+            try
             {
-                // Guardar el archivo pendiente para procesarlo después del login
-                Console.WriteLine($"Archivo pendiente para procesar después del login: {pendingFilePath}");
+                // Asegúrate de que la contraseña esté oculta por defecto
+                this.passwordTextBox.Password = true;
 
-                // Solo mostrar notificación al usuario si hay un archivo pendiente explícito
-                MessageBox.Show(
-                    $"Se ha encontrado un documento PDF pendiente de procesar.\n\n" +
-                    $"Archivo: {Path.GetFileName(pendingFilePath)}\n\n" +
-                    "Se cargará automáticamente después de iniciar sesión.",
-                    "Documento pendiente",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                // Limpiar cualquier sesión anterior
+                AppSession.Current.Clear();
+
+                // Intentar inicializar el sistema de impresión silenciosamente
+                await InitializeVirtualPrinterAsync();
+
+                // Cargar la imagen de ilustración
+                LoadIllustrationImage();
+
+                // Configurar algunos detalles visuales adicionales
+                ConfigureVisualElements();
+
+                // Asegurarse de que el formulario se dibuje correctamente
+                this.Update();
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error en LoginForm_Load: {ex.Message}");
 
-            // Asegurarse de que el formulario se dibuje correctamente
-            this.Update();
+                // Crear log de error
+                string errorLog = Path.Combine(Path.GetTempPath(), "loginform_error.txt");
+                File.AppendAllText(errorLog, $"[{DateTime.Now}] Error en LoginForm_Load: {ex.Message}\r\n{ex.StackTrace}\r\n");
+            }
         }
 
         /// <summary>
-        /// Intenta instalar la impresora virtual si no está instalada
+        /// Intenta inicializar el sistema de impresión virtual
         /// </summary>
-        private async Task InstallVirtualPrinterAsync()
+        private async Task InitializeVirtualPrinterAsync()
         {
             try
             {
-                // Verificar si la impresora ya está instalada
-                if (!ECMVirtualPrinter.IsPrinterInstalled())
+                Console.WriteLine("Inicializando sistema de impresión virtual...");
+                bool initialized = await VirtualPrinterService.InitializeAsync();
+                
+                if (initialized)
                 {
-                    Console.WriteLine("Impresora virtual no detectada, intentando instalar automáticamente...");
-
-                    // Intentar instalación silenciosa con permisos de administrador
-                    if (ECMVirtualPrinter.IsAdministrator())
-                    {
-                        await ECMVirtualPrinter.InstallPrinterAsync(true); // true = modo silencioso
-                    }
-                    else
-                    {
-                        // Si no tenemos permisos, mostrar un mensaje pequeño que no interrumpa el flujo
-                        Console.WriteLine("No se tienen permisos para instalar la impresora automáticamente");
-
-                        // Opcional: Podríamos mostrar una notificación no invasiva al usuario
-                        // LinkLabel en vez de MessageBox para no interrumpir el login
-                    }
+                    Console.WriteLine("Sistema de impresión inicializado correctamente");
                 }
                 else
                 {
-                    Console.WriteLine("Impresora virtual ya instalada y lista para usar");
+                    Console.WriteLine("No se pudo inicializar completamente el sistema de impresión");
                 }
             }
             catch (Exception ex)
             {
                 // Solo registramos el error, no bloqueamos el flujo de login
-                Console.WriteLine($"Error al verificar/instalar impresora virtual: {ex.Message}");
+                Console.WriteLine($"Error al inicializar sistema de impresión: {ex.Message}");
             }
         }
 
         private void ConfigureVisualElements()
         {
-            // Cambiar el color de fondo del panel izquierdo para no usar amarillo
-            logoPanel.BackColor = Color.Transparent; // Blanco en lugar de amarillo dorado
+            // Cambiar el color de fondo del panel izquierdo
+            logoPanel.BackColor = Color.Transparent;
 
-            // Configurar el botón de inicio de sesión para que coincida con el esquema de colores
+            // Configurar el botón de inicio de sesión
             loginButton.UseAccentColor = true;
 
-            // Ajustar las posiciones si es necesario
-            // Esto se puede ajustar para asegurar que todo quede bien ubicado
+            // Ajustar las posiciones
             welcomeLabel.Location = new Point(welcomeLabel.Location.X, welcomeLabel.Location.Y);
             subtitleLabel.Location = new Point(subtitleLabel.Location.X, welcomeLabel.Location.Y + welcomeLabel.Height + 10);
         }
+
         private void LoadIllustrationImage()
         {
             try
@@ -159,7 +134,6 @@ namespace WinFormsApiClient
                 }
                 else
                 {
-                    // Si no existe, usar el logo de ECM Central en su lugar o crear una imagen temporal
                     Console.WriteLine($"Imagen de ilustración no encontrada en: {illustrationPath}");
                     CreateECMCentralLogoImage();
                 }
@@ -182,7 +156,7 @@ namespace WinFormsApiClient
                     // Fondo transparente
                     g.Clear(Color.Transparent);
 
-                    // Logo de ECM Central (basado en el diseño que veo en la imagen)
+                    // Logo de ECM Central
                     int circleDiameter = 150;
                     int circleX = (logoImg.Width - circleDiameter) / 2;
                     int circleY = (logoImg.Height - circleDiameter) / 2;
@@ -218,140 +192,86 @@ namespace WinFormsApiClient
             catch (Exception ex)
             {
                 Console.WriteLine($"Error al crear imagen de logo: {ex.Message}");
-                // Si falla, no hacer nada para evitar errores adicionales
             }
         }
+
         private async void LoginButton_Click(object sender, EventArgs e)
         {
-            // Obtener las credenciales del formulario
             string email = emailTextBox.Text;
             string password = passwordTextBox.Text;
 
-            // Validación básica
             if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
             {
                 MessageBox.Show("Por favor complete todos los campos", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
 
-            // Guardar el email del usuario
             AppSession.Current.UserEmail = email;
-
-            // Desactivar el botón de login para evitar múltiples intentos
             loginButton.Enabled = false;
 
             try
             {
-                // Llamar al método de autenticación asincrónica
                 var loginResponse = await LoginAsync(email, password);
 
                 if (loginResponse != null && loginResponse.Success)
                 {
-                    // Login exitoso - Ignoramos la verificación TFA y vamos directamente al formulario principal
+                    // Guardar datos de sesión
+                    AppSession.Current.AuthToken = loginResponse.Data.Token;
+                    AppSession.Current.UserName = loginResponse.Data.User.Name;
+                    AppSession.Current.UserEmail = loginResponse.Data.User.Email;
+                    AppSession.Current.UserRole = loginResponse.Data.User.Role;
+                    AppSession.Current.Cabinets = loginResponse.Data.Cabinets;
 
-                    // Guardar el token y la información del usuario
-                    if (loginResponse.TwoFactor)
+                    // Ocultar el formulario de login
+                    this.Hide();
+
+                    var formularioForm = new FormularioForm();
+
+                    // Si hay archivo pendiente, establecerlo usando el evento Shown
+                    if (!string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath))
                     {
-                        // Si la API devuelve TFA, pero decidimos ignorarlo
-                        // Mostrar un mensaje opcional para informar al usuario
-                        MessageBox.Show("Tu cuenta requiere verificación de dos factores, pero se ha omitido para esta demo",
-                            "Información", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    }
-                    else
-                    {
-                        // Login exitoso sin verificación de dos factores
-                        AppSession.Current.AuthToken = loginResponse.Data.Token;
-                        AppSession.Current.UserName = loginResponse.Data.User.Name;
-                        AppSession.Current.UserRole = loginResponse.Data.User.Role;
-                        AppSession.Current.Cabinets = loginResponse.Data.Cabinets;
-                    }
-
-                    // Mostrar el formulario principal
-                    Hide();
-                    MessageBox.Show("Login exitoso!", "Bienvenido", MessageBoxButtons.OK, MessageBoxIcon.Information);
-
-                    // SIMPLIFICADO: Solo usar el archivo pendiente que se pasó al constructor
-                    bool hasPendingFile = !string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath);
-                    Console.WriteLine($"¿Hay archivo pendiente? {hasPendingFile}, Ruta: {pendingFilePath}");
-
-                    // Crear el formulario principal
-                    FormularioForm formulario = new FormularioForm();
-
-                    if (hasPendingFile)
-                    {
-                        try
+                        formularioForm.Shown += (s, ev) =>
                         {
-                            // Mostrar el formulario
-                            formulario.Show();
-
-                            // Dar más tiempo para que el formulario se inicialice completamente
-                            await Task.Delay(1500);
-
-                            // Usar un enfoque más confiable: enviar mensaje al formulario
-                            formulario.BeginInvoke((Action)(() => {
-                                try
-                                {
-                                    // Primero verificar que el archivo exista y esté accesible
-                                    if (!File.Exists(pendingFilePath))
-                                    {
-                                        MessageBox.Show(
-                                            $"No se pudo acceder al archivo pendiente:\n{pendingFilePath}",
-                                            "Error de acceso a archivo",
-                                            MessageBoxButtons.OK,
-                                            MessageBoxIcon.Error);
-                                        return;
-                                    }
-
-                                    // Usar directamente EstablecerArchivoSeleccionado que ya maneja la cola
-                                    formulario.EstablecerArchivoSeleccionado(pendingFilePath);
-
-                                    // Informar al usuario
-                                    MessageBox.Show(
-                                        $"Se ha cargado automáticamente el documento impreso:\n{Path.GetFileName(pendingFilePath)}\n\n" +
-                                        "Complete los datos necesarios y pulse 'Enviar' para subirlo al servidor.",
-                                        "Documento cargado automáticamente",
-                                        MessageBoxButtons.OK,
-                                        MessageBoxIcon.Information);
-                                }
-                                catch (Exception ex)
-                                {
-                                    Console.WriteLine($"Error al establecer archivo en formulario: {ex.Message}");
-                                    MessageBox.Show($"Ocurrió un error al cargar el archivo: {ex.Message}",
-                                        "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                                }
-                            }));
-
-                            // Limpiar referencias
-                            pendingFilePath = null;
-                        }
-                        catch (Exception fileEx)
-                        {
-                            Console.WriteLine($"Error al procesar archivo pendiente: {fileEx.Message}");
-                            formulario.ShowDialog();
-                        }
-                    }
-                    else
-                    {
-                        // Si no hay archivo pendiente, mostrar el formulario normalmente
-                        formulario.ShowDialog();
+                            try
+                            {
+                                formularioForm.EstablecerArchivoSeleccionado(pendingFilePath);
+                                
+                                MessageBox.Show(
+                                    $"Se ha cargado automáticamente el documento:\n{Path.GetFileName(pendingFilePath)}",
+                                    "Documento cargado",
+                                    MessageBoxButtons.OK,
+                                    MessageBoxIcon.Information);
+                                    
+                                Console.WriteLine($"Archivo establecido: {pendingFilePath}");
+                            }
+                            catch (Exception ex)
+                            {
+                                Console.WriteLine($"Error estableciendo archivo: {ex.Message}");
+                            }
+                        };
                     }
 
-                    // Cerrar el formulario de login
-                    Close();
+                    formularioForm.ShowDialog();
+                    this.Close();
                 }
                 else
                 {
-                    // Si el login falla, mostrar el error
-                    MessageBox.Show($"Error: {loginResponse?.Message ?? "Credenciales incorrectas"}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    loginButton.Enabled = true;
+                    MessageBox.Show($"Error: {loginResponse?.Message ?? "Credenciales incorrectas"}",
+                        "Error de inicio de sesión", MessageBoxButtons.OK, MessageBoxIcon.Error);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error en el proceso de login: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Console.WriteLine($"Error en login: {ex.Message}");
+                MessageBox.Show($"Error al iniciar sesión: {ex.Message}",
+                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
                 loginButton.Enabled = true;
             }
         }
+
         // Método para alternar la visibilidad de la contraseña
         private void ShowPasswordButton_Click(object sender, EventArgs e)
         {
@@ -360,21 +280,22 @@ namespace WinFormsApiClient
             {
                 // Mostrar la contraseña
                 this.passwordTextBox.Password = false;
-                ShowPasswordButton.IconChar = FontAwesome.Sharp.IconChar.EyeSlash;  // Ícono de "ocultar"
+                ShowPasswordButton.IconChar = FontAwesome.Sharp.IconChar.EyeSlash;
             }
             else
             {
                 // Ocultar la contraseña
                 this.passwordTextBox.Password = true;
-                ShowPasswordButton.IconChar = FontAwesome.Sharp.IconChar.Eye;  // Ícono de "mostrar"
+                ShowPasswordButton.IconChar = FontAwesome.Sharp.IconChar.Eye;
             }
         }
+
         private async Task<LoginResponse> LoginAsync(string email, string password)
         {
             var client = new HttpClient();
             var request = new HttpRequestMessage(HttpMethod.Post, "https://ecm.ecmcentral.com/api/v2/auth/login");
 
-            // Crear el contenido en formato JSON con objeto anónimo y JsonConvert
+            // Crear el contenido en formato JSON
             var loginData = new
             {
                 email,
@@ -391,16 +312,14 @@ namespace WinFormsApiClient
                 // Enviar la solicitud al servidor
                 var response = await client.SendAsync(request);
 
-                // Si la respuesta no es exitosa, capturamos el contenido del error
+                // Si la respuesta no es exitosa, capturar el error
                 if (!response.IsSuccessStatusCode)
                 {
                     var errorContent = await response.Content.ReadAsStringAsync();
 
-                    // Mostrar el error en un cuadro de mensaje
                     MessageBox.Show($"Error al realizar la solicitud:\nStatus Code: {response.StatusCode}\nContenido: {errorContent}",
                         "Error de autenticación", MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-                    // Registrar el error en la consola
                     Console.WriteLine("=== Error de autenticación ===");
                     Console.WriteLine($"Status Code: {response.StatusCode}");
                     Console.WriteLine($"Contenido: {errorContent}");
@@ -412,7 +331,6 @@ namespace WinFormsApiClient
                 // Leer la respuesta del servidor
                 var responseString = await response.Content.ReadAsStringAsync();
 
-                // Registrar la respuesta exitosa en la consola
                 Console.WriteLine("=== Respuesta exitosa ===");
                 Console.WriteLine(responseString);
                 Console.WriteLine("==========================");
@@ -422,10 +340,8 @@ namespace WinFormsApiClient
             }
             catch (Exception ex)
             {
-                // Mostrar el error en un cuadro de mensaje
                 MessageBox.Show("Error al realizar la solicitud: " + ex.Message, "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
 
-                // Registrar el error en la consola
                 Console.WriteLine("=== Error en la solicitud ===");
                 Console.WriteLine(ex.ToString());
                 Console.WriteLine("=============================");
