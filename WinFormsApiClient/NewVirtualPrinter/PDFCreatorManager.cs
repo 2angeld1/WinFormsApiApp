@@ -69,6 +69,9 @@ namespace WinFormsApiClient.NewVirtualPrinter
                 if (!Directory.Exists(_outputFolder))
                     Directory.CreateDirectory(_outputFolder);
 
+                // Obtener ruta dinámica y convertir a doble barra invertida
+                string exePath = Application.ExecutablePath.Replace(@"\", @"\\");
+                
                 using (var key = Registry.CurrentUser.CreateSubKey(@"SOFTWARE\pdfforge\PDFCreator\Settings\ConversionProfiles\0"))
                 {
                     using (var autoSaveKey = key.CreateSubKey("AutoSave"))
@@ -82,8 +85,8 @@ namespace WinFormsApiClient.NewVirtualPrinter
                     using (var scriptKey = key.CreateSubKey("Scripting"))
                     {
                         scriptKey.SetValue("Enabled", "True");
-                        scriptKey.SetValue("ScriptFile", Application.ExecutablePath); // Ruta absoluta de tu EXE
-                        scriptKey.SetValue("ParameterString", "\"<OutputFilenames>\""); // Solo la ruta del PDF entre comillas
+                        scriptKey.SetValue("ScriptFile", exePath); // Ahora con doble barra
+                        scriptKey.SetValue("ParameterString", "/print:\"<OutputFilenames>\"");
                         scriptKey.SetValue("WaitForScript", "False");
                     }
 

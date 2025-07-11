@@ -1,7 +1,7 @@
 ﻿using System;
 using System.Threading.Tasks;
 using WinFormsApiClient.NewVirtualPrinter;
-//using WinFormsApiClient.Scanner; // Agregar esta línea
+using WinFormsApiClient.Scanner;
 
 namespace WinFormsApiClient
 {
@@ -68,12 +68,30 @@ namespace WinFormsApiClient
         {
             return PDFCreatorManager.OUTPUT_FOLDER;
         }
-        ///// <summary>
-        ///// Inicia el proceso de escaneo y subida - NUEVO
-        ///// </summary>
-        //public static async Task<bool> ScanAndUploadAsync()
-        //{
-        //    return await ScannerService.ScanAndUploadAsync();
-        //}
+        /// <summary>
+        /// Inicia el proceso de escaneo y subida - NUEVO
+        /// </summary>
+        public static async Task<bool> ScanAndUploadAsync()
+        {
+            return await ScannerService.ScanAndUploadAsync();
+        }
+
+        public static LicenseFeatures UserLicense { get; set; } = LicenseFeatures.None;
+
+        public enum LicenseFeatures
+        {
+            None = 0,
+            Scan = 1,
+            // Agrega aquí otros flags si los necesitas
+        }
+
+        public static async Task<bool> CheckLicenseAsync()
+        {
+            // Aquí deberías implementar la lógica real para consultar la licencia al servidor.
+            // Por ahora, simula que siempre tienes licencia de escaneo:
+            await Task.Delay(100); // Simula llamada asíncrona
+            UserLicense = LicenseFeatures.Scan;
+            return true;
+        }
     }
 }

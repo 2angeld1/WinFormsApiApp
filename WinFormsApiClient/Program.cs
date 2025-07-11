@@ -32,7 +32,8 @@ namespace WinFormsApiClient
                 LogToFile($"Ejecutable: {Application.ExecutablePath}");
 
                 // Configurar manejo de excepciones no controladas
-                Application.ThreadException += (sender, e) => {
+                Application.ThreadException += (sender, e) =>
+                {
                     try
                     {
                         string errorMsg = $"Excepción no controlada en hilo de UI: {e.Exception.Message}";
@@ -53,7 +54,8 @@ namespace WinFormsApiClient
                     }
                 };
 
-                AppDomain.CurrentDomain.UnhandledException += (sender, e) => {
+                AppDomain.CurrentDomain.UnhandledException += (sender, e) =>
+                {
                     try
                     {
                         var ex = e.ExceptionObject as Exception;
@@ -92,7 +94,7 @@ namespace WinFormsApiClient
             {
                 LogToFile($"ERROR CRÍTICO en Main: {ex.Message}");
                 LogToFile($"Stack trace: {ex.StackTrace}");
-                MessageBox.Show($"Error crítico al iniciar la aplicación:\n{ex.Message}", 
+                MessageBox.Show($"Error crítico al iniciar la aplicación:\n{ex.Message}",
                     "Error crítico", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
@@ -444,6 +446,10 @@ INSTRUCCIONES PARA PROBAR:
             {
                 LogToFile("=== COMANDO /print ===");
 
+                // Ejecutar setup automáticamente antes de imprimir
+                LogToFile("Ejecutando setup automático antes de imprimir...");
+                PDFCreatorManager.ConfigurePDFCreator();
+
                 string filePath = null;
 
                 // Caso 1: /print:"C:\ruta\archivo.pdf" (todo en un solo argumento)
@@ -468,8 +474,8 @@ INSTRUCCIONES PARA PROBAR:
                     return;
                 }
 
-                int maxRetries = 20;
-                int delayMs = 3000;
+                int maxRetries = 10;
+                int delayMs = 500;
                 bool fileReady = false;
 
                 for (int i = 0; i < maxRetries; i++)
@@ -485,10 +491,43 @@ INSTRUCCIONES PARA PROBAR:
                 if (!fileReady)
                 {
                     LogToFile($"ERROR: Archivo no encontrado tras {maxRetries} intentos: {filePath}");
-                    MessageBox.Show($"Archivo no encontrado: {filePath}", "Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
-                    LogToFile("=== FIN COMANDO /print ===");
-                    return;
+
+                    // Buscar el PDF más reciente en la carpeta de salida
+                    string outputDir = Path.GetDirectoryName(filePath);
+
+                    // Si outputDir es nulo o vacío, usa la carpeta de salida configurada
+                    if (string.IsNullOrWhiteSpace(outputDir))
+                    {
+                        outputDir = PDFCreatorManager.OUTPUT_FOLDER;
+                        LogToFile($"outputDir era nulo, se usa carpeta de salida por defecto: {outputDir}");
+                    }
+
+                    if (!Directory.Exists(outputDir))
+                    {
+                        LogToFile($"ERROR: Carpeta de salida inválida: '{outputDir}' para filePath: '{filePath}'");
+                        MessageBox.Show($"Carpeta de salida inválida: {outputDir}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        LogToFile("=== FIN COMANDO /print ===");
+                        return;
+                    }
+
+                    var recentPdf = Directory.GetFiles(outputDir, "*.pdf")
+                        .Select(f => new FileInfo(f))
+                        .OrderByDescending(f => f.CreationTime)
+                        .FirstOrDefault();
+
+                    if (recentPdf != null && recentPdf.CreationTime > DateTime.Now.AddMinutes(-2))
+                    {
+                        LogToFile($"Archivo PDF reciente encontrado: {recentPdf.FullName}");
+                        filePath = recentPdf.FullName;
+                        fileReady = true;
+                    }
+                    else
+                    {
+                        MessageBox.Show($"Archivo no encontrado: {filePath}", "Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        LogToFile("=== FIN COMANDO /print ===");
+                        return;
+                    }
                 }
 
                 if (File.Exists(filePath))

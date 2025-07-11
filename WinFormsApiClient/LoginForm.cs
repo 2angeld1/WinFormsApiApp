@@ -134,14 +134,15 @@ namespace WinFormsApiClient
                 }
                 else
                 {
-                    Console.WriteLine($"Imagen de ilustración no encontrada en: {illustrationPath}");
-                    CreateECMCentralLogoImage();
+                    // Usa el logo de ThemeManager si no hay imagen personalizada
+                    logoPictureBox.Image = ThemeManager.GetLogoImage();
+                    Console.WriteLine("Logo ECM Central aplicado desde ThemeManager.");
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error al cargar imagen de ilustración: {ex.Message}");
-                CreateECMCentralLogoImage();
+                logoPictureBox.Image = ThemeManager.GetLogoImage();
             }
         }
         

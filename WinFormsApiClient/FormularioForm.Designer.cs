@@ -1,4 +1,4 @@
-﻿using MaterialSkin.Controls;
+﻿﻿using MaterialSkin.Controls;
 using System.Drawing;
 using System;
 using System.Windows.Forms;
@@ -296,7 +296,7 @@ namespace WinFormsApiClient
             this.BtnScanToPortal.Type = MaterialSkin.Controls.MaterialButton.MaterialButtonType.Contained;
             this.BtnScanToPortal.UseAccentColor = true;
             this.BtnScanToPortal.Dock = DockStyle.Fill;
-            //this.BtnScanToPortal.Click += new System.EventHandler(this.BtnScanToPortal_Click);
+            this.BtnScanToPortal.Click += new System.EventHandler(this.BtnScanToPortal_Click);
 
             // SubmitButton
             this.SubmitButton.AutoSizeMode = System.Windows.Forms.AutoSizeMode.GrowAndShrink;

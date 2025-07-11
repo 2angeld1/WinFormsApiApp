@@ -233,5 +233,13 @@ namespace WinFormsApiClient
 
             return logoPictureBox;
         }
+
+        /// <summary>
+        /// Obtiene la imagen del logo
+        /// </summary>
+        public static Image GetLogoImage()
+        {
+            return logoImage;
+        }
     }
 }
