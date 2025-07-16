@@ -10,7 +10,10 @@ namespace WinFormsApiClient.NewVirtualPrinter
 {
     public static class PDFCreatorManager
     {
-        private static string _outputFolder = @"C:\Temp\ECM Central";
+        private static string _outputFolder = Path.Combine(
+            Path.GetPathRoot(Environment.GetFolderPath(Environment.SpecialFolder.System)),
+            "Temp", "ECM Central"
+        );
         
         public static string OUTPUT_FOLDER 
         { 
