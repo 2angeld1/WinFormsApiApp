@@ -154,8 +154,7 @@ namespace WinFormsApiClient
             {
                 LogToFile("=== COMANDO /setup ===");
                 Console.WriteLine("=== INICIANDO SETUP ===");
-
-                // Mostrar progreso
+            
                 using (var progressForm = new Form())
                 {
                     progressForm.Text = "Configurando ECM Central";
@@ -164,7 +163,7 @@ namespace WinFormsApiClient
                     progressForm.FormBorderStyle = FormBorderStyle.FixedDialog;
                     progressForm.MaximizeBox = false;
                     progressForm.MinimizeBox = false;
-
+            
                     var label = new Label
                     {
                         Text = "Configurando sistema de impresión virtual...",
@@ -172,7 +171,7 @@ namespace WinFormsApiClient
                         Location = new Point(20, 20)
                     };
                     progressForm.Controls.Add(label);
-
+            
                     var progressBar = new ProgressBar
                     {
                         Style = ProgressBarStyle.Marquee,
@@ -180,7 +179,7 @@ namespace WinFormsApiClient
                         Size = new Size(400, 23)
                     };
                     progressForm.Controls.Add(progressBar);
-
+            
                     var statusLabel = new Label
                     {
                         Text = "Iniciando...",
@@ -189,59 +188,83 @@ namespace WinFormsApiClient
                         ForeColor = Color.Blue
                     };
                     progressForm.Controls.Add(statusLabel);
-
+            
                     progressForm.Show();
                     Application.DoEvents();
-
+            
                     try
                     {
                         // Paso 1: Verificar PDFCreator
                         statusLabel.Text = "Verificando PDFCreator...";
                         Application.DoEvents();
                         LogToFile("Verificando instalación de PDFCreator...");
-
+            
                         bool pdfCreatorInstalled = PDFCreatorManager.IsPDFCreatorInstalled();
                         LogToFile($"PDFCreator instalado: {pdfCreatorInstalled}");
-
+            
                         if (!pdfCreatorInstalled)
                         {
-                            statusLabel.Text = "PDFCreator no encontrado. Instalando...";
+                            statusLabel.Text = "PDFCreator no encontrado. Instalación manual requerida.";
                             Application.DoEvents();
-                            LogToFile("PDFCreator no instalado, iniciando instalación...");
-
+                            LogToFile("PDFCreator no instalado, abriendo web de instalación...");
+            
                             progressForm.Hide();
-                            pdfCreatorInstalled = await PDFCreatorInstaller.EnsurePDFCreatorInstalledAsync();
+                            MessageBox.Show(
+                                "Se abrirá la página web oficial de PDFCreator. Descarga e instala PDFCreator Free y la impresora virtual manualmente. " +
+                                "Cuando hayas terminado, haz clic en Sí para continuar.",
+                                "Instalar PDFCreator",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+            
+                            PDFCreatorInstaller.OpenDownloadPage();
+            
+                            var result = MessageBox.Show(
+                                "¿Ya instalaste PDFCreator y la impresora virtual?\n\nHaz clic en Sí para configurar el sistema.",
+                                "Confirmar instalación",
+                                MessageBoxButtons.YesNo,
+                                MessageBoxIcon.Question);
+            
                             progressForm.Show();
-
-                            LogToFile($"Resultado de instalación: {pdfCreatorInstalled}");
-
+                            Application.DoEvents();
+            
+                            if (result != DialogResult.Yes)
+                            {
+                                progressForm.Close();
+                                LogToFile("Instalación cancelada por el usuario.");
+                                return;
+                            }
+            
+                            // Re-verifica instalación
+                            pdfCreatorInstalled = PDFCreatorManager.IsPDFCreatorInstalled();
+                            LogToFile($"Verificación post-instalación: {pdfCreatorInstalled}");
+            
                             if (!pdfCreatorInstalled)
                             {
                                 progressForm.Close();
-                                LogToFile("ERROR: Instalación de PDFCreator falló");
-                                MessageBox.Show("No se pudo instalar PDFCreator. El setup ha fallado.",
+                                LogToFile("ERROR: PDFCreator no detectado tras instalación manual.");
+                                MessageBox.Show("PDFCreator no se detecta como instalado. El setup ha fallado.",
                                     "Error de configuración", MessageBoxButtons.OK, MessageBoxIcon.Error);
                                 return;
                             }
                         }
-
-                        // Paso 2: Configurar PDFCreator
-                        statusLabel.Text = "Configurando PDFCreator...";
+            
+                        // Paso 2: Configurar PDFCreator/printer/perfil
+                        statusLabel.Text = "Configurando PDFCreator y la impresora virtual...";
                         Application.DoEvents();
                         LogToFile("Configurando PDFCreator...");
-
+            
                         bool configured = PDFCreatorManager.ConfigurePDFCreator();
-                        // <-- AQUÍ agrega la verificación de la impresora:
+            
                         if (!PDFCreatorManager.IsPrinterInstalled("ECM Central Printer"))
                         {
                             MessageBox.Show("La impresora virtual 'ECM Central Printer' no está instalada. Por favor, reinstala PDFCreator.",
                                 "Impresora no encontrada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         }
-
+            
                         LogToFile($"PDFCreator configurado: {configured}");
-
+            
                         progressForm.Close();
-
+            
                         if (configured)
                         {
                             string message = "Sistema de impresión configurado correctamente.\n\n" +
@@ -252,7 +275,7 @@ namespace WinFormsApiClient
                                 $"• Aplicación registrada: ✓\n\n" +
                                 "Ya puedes usar 'Imprimir a PDF' desde cualquier aplicación.\n\n" +
                                 "Usa /createtest para probar el sistema.";
-
+            
                             LogToFile("Setup completado exitosamente");
                             MessageBox.Show(message, "Configuración completada",
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -272,10 +295,10 @@ namespace WinFormsApiClient
                             "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
                     }
                 }
-
+            
                 LogToFile("=== FIN COMANDO /setup ===");
                 return;
-            }
+            }    
             else if (argument == "/configureprinter")
             {
                 LogToFile("=== COMANDO /configureprinter ===");
@@ -291,7 +314,26 @@ namespace WinFormsApiClient
                 LogToFile("=== FIN COMANDO /configureprinter ===");
                 return;
             }
-            
+            else if (argument == "/help")
+            {
+                LogToFile("=== COMANDO /help ===");
+                string helpMessage = "Comandos disponibles:\n\n" +
+                    "/diagnose - Ejecuta diagnóstico de PDFCreator\n" +
+                    "/setup - Configura PDFCreator y la impresora virtual\n" +
+                    "/configureprinter - Configura la impresora ECM Central Printer\n" +
+                    "/testpdfcreator - Crea un archivo de prueba para PDFCreator\n" +
+                    "/pdfcreatorlog - Muestra el log de diagnóstico de PDFCreator\n" +
+                    "/clean - Limpia archivos temporales y procesos colgados\n" +
+                    "/print:<ruta> - Imprime el archivo especificado\n" +
+                    "/createtest - Crea un archivo de prueba para imprimir\n" +
+                    "/testdirect - Prueba directa con un archivo predefinido\n" +
+                    "/batchlog - Muestra el log del batch de impresión\n" +
+                    "/checkconfig - Verifica la configuración actual del sistema";
+
+                MessageBox.Show(helpMessage, "Ayuda", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                LogToFile("=== FIN COMANDO /help ===");
+                return;
+            }
             else if (argument == "/testpdfcreator")
             {
                 LogToFile("=== COMANDO /testpdfcreator ===");
