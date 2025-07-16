@@ -248,23 +248,36 @@ namespace WinFormsApiClient
                             }
                         }
             
-                        // Paso 2: Configurar PDFCreator/printer/perfil
-                        statusLabel.Text = "Configurando PDFCreator y la impresora virtual...";
+                        // Paso 2: Renombrar impresora y configurar PDFCreator/perfil
+                        statusLabel.Text = "Renombrando impresora PDFCreator y configurando perfil...";
                         Application.DoEvents();
+                        LogToFile("Renombrando impresora PDFCreator...");
+                        
+                        bool renamed = PDFCreatorManager.RenamePDFCreatorPrinter("ECM Central Printer");
+                        LogToFile($"Resultado renombramiento impresora: {renamed}");
+                        
+                        if (!renamed)
+                        {
+                            MessageBox.Show("No se pudo renombrar la impresora PDFCreator. El perfil no será modificado hasta que el printer exista y tenga el nombre correcto.",
+                                "Error renombrando impresora", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                            progressForm.Close();
+                            return;
+                        }
+                        
+                        // Configuración del perfil
                         LogToFile("Configurando PDFCreator...");
-            
                         bool configured = PDFCreatorManager.ConfigurePDFCreator();
-            
+                        
                         if (!PDFCreatorManager.IsPrinterInstalled("ECM Central Printer"))
                         {
                             MessageBox.Show("La impresora virtual 'ECM Central Printer' no está instalada. Por favor, reinstala PDFCreator.",
                                 "Impresora no encontrada", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         }
-            
+                        
                         LogToFile($"PDFCreator configurado: {configured}");
-            
+                        
                         progressForm.Close();
-            
+                        
                         if (configured)
                         {
                             string message = "Sistema de impresión configurado correctamente.\n\n" +
@@ -275,7 +288,7 @@ namespace WinFormsApiClient
                                 $"• Aplicación registrada: ✓\n\n" +
                                 "Ya puedes usar 'Imprimir a PDF' desde cualquier aplicación.\n\n" +
                                 "Usa /createtest para probar el sistema.";
-            
+                        
                             LogToFile("Setup completado exitosamente");
                             MessageBox.Show(message, "Configuración completada",
                                 MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -302,6 +315,7 @@ namespace WinFormsApiClient
             else if (argument == "/configureprinter")
             {
                 LogToFile("=== COMANDO /configureprinter ===");
+                PDFCreatorManager.RenamePDFCreatorPrinter("ECM Central Printer");
                 bool configured = PDFCreatorManager.ConfigurePDFCreator();
                 if (configured && PDFCreatorManager.IsPrinterInstalled("ECM Central Printer"))
                 {
