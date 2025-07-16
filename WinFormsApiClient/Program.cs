@@ -276,6 +276,22 @@ namespace WinFormsApiClient
                 LogToFile("=== FIN COMANDO /setup ===");
                 return;
             }
+            else if (argument == "/configureprinter")
+            {
+                LogToFile("=== COMANDO /configureprinter ===");
+                bool configured = PDFCreatorManager.ConfigurePDFCreator();
+                if (configured && PDFCreatorManager.IsPrinterInstalled("ECM Central Printer"))
+                {
+                    MessageBox.Show("Printer y perfil configurados correctamente.", "Configuración", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }
+                else
+                {
+                    MessageBox.Show("Error al configurar el printer o el perfil.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                LogToFile("=== FIN COMANDO /configureprinter ===");
+                return;
+            }
+            
             else if (argument == "/testpdfcreator")
             {
                 LogToFile("=== COMANDO /testpdfcreator ===");
