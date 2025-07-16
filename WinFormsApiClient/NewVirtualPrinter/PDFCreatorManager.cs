@@ -4,6 +4,7 @@ using System.Drawing.Printing;
 using System.IO;
 using System.Windows.Forms;
 using Microsoft.Win32;
+using System.Management;
 
 namespace WinFormsApiClient.NewVirtualPrinter
 {
@@ -18,7 +19,49 @@ namespace WinFormsApiClient.NewVirtualPrinter
         }
 
         private const string PRINTER_NAME = "ECM Central Printer";
+        
+        public static bool RenamePDFCreatorPrinter(string newPrinterName)
+        {
+            string oldPrinterName = "PDFCreator";
+            bool renamed = false;
 
+            try
+            {
+                using (var searcher = new ManagementObjectSearcher(
+                    "SELECT * FROM Win32_Printer WHERE Name = '" + oldPrinterName.Replace("'", "''") + "'"))
+                {
+                    foreach (ManagementObject printer in searcher.Get())
+                    {
+                        try
+                        {
+                            // Primero intenta con RenamePrinter
+                            printer.InvokeMethod("RenamePrinter", new object[] { newPrinterName });
+                            renamed = true;
+                        }
+                        catch
+                        {
+                            // Si falla, usa la alternativa
+                            try
+                            {
+                                printer["Name"] = newPrinterName;
+                                printer.Put();
+                                renamed = true;
+                            }
+                            catch (Exception ex2)
+                            {
+                                Console.WriteLine($"Error alternativo renombrando impresora: {ex2.Message}");
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error renombrando impresora PDFCreator: {ex.Message}");
+            }
+
+            return renamed && IsPrinterInstalled(newPrinterName);
+        }
         /// <summary>
         /// Verifica si PDFCreator está instalado
         /// </summary>
