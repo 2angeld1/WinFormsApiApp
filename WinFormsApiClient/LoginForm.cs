@@ -197,81 +197,103 @@ namespace WinFormsApiClient
         }
 
         private async void LoginButton_Click(object sender, EventArgs e)
+{
+    string email = emailTextBox.Text;
+    string password = passwordTextBox.Text;
+
+    if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
+    {
+        MessageBox.Show("Por favor complete todos los campos", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        return;
+    }
+
+    AppSession.Current.UserEmail = email;
+    loginButton.Enabled = false;
+
+    try
+    {
+        var loginResponse = await LoginAsync(email, password);
+
+        if (loginResponse != null && loginResponse.Success)
         {
-            string email = emailTextBox.Text;
-            string password = passwordTextBox.Text;
-
-            if (string.IsNullOrEmpty(email) || string.IsNullOrEmpty(password))
+            // ---- NUEVA LÓGICA AQUÍ ----
+            if (loginResponse.TwoFactor) // <--- Cambia el nombre si tu modelo usa otro (puede ser loginResponse.two_factor)
             {
-                MessageBox.Show("Por favor complete todos los campos", "Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                return;
+                // Guardar el temp_token en sesión para usarlo luego
+                AppSession.Current.TempToken = loginResponse.TempToken; // <--- Asegúrate que el modelo tenga TempToken
+
+                // Mostrar formulario para ingresar el código de Google Authenticator
+                var tfaForm = new TwoFactorForm();
+                var tfaResult = tfaForm.ShowDialog();
+
+                if (tfaResult != DialogResult.OK)
+                {
+                    // El usuario canceló o falló en la verificación
+                    MessageBox.Show("La autenticación de dos factores falló o fue cancelada.", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    loginButton.Enabled = true;
+                    return;
+                }
+                // Si llegamos aquí, el TFA fue exitoso y los datos ya están en AppSession
+            }
+            else
+            {
+                // Si no requiere TFA, guardar los datos de sesión normalmente
+                AppSession.Current.AuthToken = loginResponse.Data.Token;
+                AppSession.Current.UserName = loginResponse.Data.User.Name;
+                AppSession.Current.UserEmail = loginResponse.Data.User.Email;
+                AppSession.Current.UserRole = loginResponse.Data.User.Role;
+                AppSession.Current.Cabinets = loginResponse.Data.Cabinets;
             }
 
-            AppSession.Current.UserEmail = email;
-            loginButton.Enabled = false;
+            // Ocultar el formulario de login
+            this.Hide();
 
-            try
+            var formularioForm = new FormularioForm();
+
+            // Si hay archivo pendiente, establecerlo usando el evento Shown
+            if (!string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath))
             {
-                var loginResponse = await LoginAsync(email, password);
-
-                if (loginResponse != null && loginResponse.Success)
+                formularioForm.Shown += (s, ev) =>
                 {
-                    // Guardar datos de sesión
-                    AppSession.Current.AuthToken = loginResponse.Data.Token;
-                    AppSession.Current.UserName = loginResponse.Data.User.Name;
-                    AppSession.Current.UserEmail = loginResponse.Data.User.Email;
-                    AppSession.Current.UserRole = loginResponse.Data.User.Role;
-                    AppSession.Current.Cabinets = loginResponse.Data.Cabinets;
-
-                    // Ocultar el formulario de login
-                    this.Hide();
-
-                    var formularioForm = new FormularioForm();
-
-                    // Si hay archivo pendiente, establecerlo usando el evento Shown
-                    if (!string.IsNullOrEmpty(pendingFilePath) && File.Exists(pendingFilePath))
+                    try
                     {
-                        formularioForm.Shown += (s, ev) =>
-                        {
-                            try
-                            {
-                                formularioForm.EstablecerArchivoSeleccionado(pendingFilePath);
-                                
-                                MessageBox.Show(
-                                    $"Se ha cargado automáticamente el documento:\n{Path.GetFileName(pendingFilePath)}",
-                                    "Documento cargado",
-                                    MessageBoxButtons.OK,
-                                    MessageBoxIcon.Information);
-                                    
-                                Console.WriteLine($"Archivo establecido: {pendingFilePath}");
-                            }
-                            catch (Exception ex)
-                            {
-                                Console.WriteLine($"Error estableciendo archivo: {ex.Message}");
-                            }
-                        };
-                    }
+                        formularioForm.EstablecerArchivoSeleccionado(pendingFilePath);
 
-                    formularioForm.ShowDialog();
-                    this.Close();
-                }
-                else
-                {
-                    MessageBox.Show($"Error: {loginResponse?.Message ?? "Credenciales incorrectas"}",
-                        "Error de inicio de sesión", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
+                        MessageBox.Show(
+                            $"Se ha cargado automáticamente el documento:\n{Path.GetFileName(pendingFilePath)}",
+                            "Documento cargado",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+
+                        Console.WriteLine($"Archivo establecido: {pendingFilePath}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error estableciendo archivo: {ex.Message}");
+                    }
+                };
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error en login: {ex.Message}");
-                MessageBox.Show($"Error al iniciar sesión: {ex.Message}",
-                    "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-            finally
-            {
-                loginButton.Enabled = true;
-            }
+
+            formularioForm.ShowDialog();
+            this.Close();
         }
+        else
+        {
+            MessageBox.Show($"Error: {loginResponse?.Message ?? "Credenciales incorrectas"}",
+                "Error de inicio de sesión", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error en login: {ex.Message}");
+        MessageBox.Show($"Error al iniciar sesión: {ex.Message}",
+            "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+    finally
+    {
+        loginButton.Enabled = true;
+    }
+}
 
         // Método para alternar la visibilidad de la contraseña
         private void ShowPasswordButton_Click(object sender, EventArgs e)
