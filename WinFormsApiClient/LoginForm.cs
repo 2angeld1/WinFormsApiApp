@@ -33,7 +33,7 @@ namespace WinFormsApiClient
 
             // Aplicar el tema oscuro del ThemeManager
             ThemeManager.ApplyDarkTheme(this);
-
+            this.TitleBarBackColor = Color.Black; // Si tienes acceso directo a esta propiedad
             // Solo guardar el archivo pendiente
             pendingFilePath = filePath;
         }
@@ -97,17 +97,25 @@ namespace WinFormsApiClient
         }
 
         private void ConfigureVisualElements()
-        {
-            // Cambiar el color de fondo del panel izquierdo
-            logoPanel.BackColor = Color.Transparent;
+{
+    // Fondo negro y texto blanco para el botón de inicio de sesión
+    loginButton.BackColor = Color.Black;
+    loginButton.ForeColor = Color.White;
+    loginButton.UseAccentColor = false; // Asegúrate que no sobrescriba el color
 
-            // Configurar el botón de inicio de sesión
-            loginButton.UseAccentColor = true;
+    // Si MaterialSkin permite sombra/borde (no todos los controles lo soportan directamente)
+    loginButton.FlatStyle = FlatStyle.Flat;
+    loginButton.FlatAppearance.BorderColor = Color.DarkGray;
+    loginButton.FlatAppearance.BorderSize = 2;
 
-            // Ajustar las posiciones
-            welcomeLabel.Location = new Point(welcomeLabel.Location.X, welcomeLabel.Location.Y);
-            subtitleLabel.Location = new Point(subtitleLabel.Location.X, welcomeLabel.Location.Y + welcomeLabel.Height + 10);
-        }
+    // Para simular sombra, puedes agregar un panel debajo o manejar Paint, pero MaterialSkin no lo tiene nativo.
+    // Ejemplo simple de borde: ya está arriba.
+
+    // Otros elementos visuales...
+    logoPanel.BackColor = Color.Transparent;
+    welcomeLabel.Location = new Point(welcomeLabel.Location.X, welcomeLabel.Location.Y);
+    subtitleLabel.Location = new Point(subtitleLabel.Location.X, welcomeLabel.Location.Y + welcomeLabel.Height + 10);
+}
 
         private void LoadIllustrationImage()
         {
